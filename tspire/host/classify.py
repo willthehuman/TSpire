@@ -28,9 +28,8 @@ def classify_screen(frame: "NDArray", regions: RegionMap, backend: VisionBackend
 
 
 def _looks_like_combat(frame: "NDArray", regions: RegionMap, backend: VisionBackend) -> bool:
-    energy_present = backend.region_filled(frame, regions.energy)
-    end_turn_present = backend.region_filled(frame, regions.end_turn)
-    has_monster = bool(backend.find_red_bars(frame, regions.monster_search))
-    # Require the player-side signals plus at least one enemy bar. Tunable once we have
-    # real captures (the calibrate tool reports each signal).
-    return energy_present and end_turn_present and has_monster
+    # Cheap structural signal (no LLM, no flaky red-bar detection): the energy orb and the
+    # End-Turn button are both present only during combat. This gates the expensive parse.
+    return backend.region_filled(frame, regions.energy) and backend.region_filled(
+        frame, regions.end_turn
+    )

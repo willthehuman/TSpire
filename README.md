@@ -3,11 +3,20 @@
 Play **Slay the Spire** (the first game) from a remote terminal — **without a mod**, so
 achievements stay enabled.
 
-The game runs normally on a gaming PC. A **host** process there reads the screen (template
-matching + OCR) to reconstruct the game state and acts as a **virtual Xbox360 controller**
-(via `vgamepad` / ViGEmBus) to send input. A **client** running in any terminal renders the
-state and relays your commands over a WebSocket. You make every decision; the host is just
-"eyes + hands".
+The game runs normally on a gaming PC. A **host** process there reads the screen and acts as
+a **virtual Xbox360 controller** (via `vgamepad` / ViGEmBus) to send input. A **client**
+running in any terminal renders the state and relays your commands over a WebSocket. You make
+every decision; the host is just "eyes + hands".
+
+Screen reading has two modes (config `vision_mode`):
+
+- **`llm`** (default) — a local **Ollama** vision model (e.g. `gemma4:e4b-it-qat`) reads the
+  busy combat scene (all enemies + the overlapping hand) robustly. Fixed numbers
+  (energy/HP/block) are read from upscaled region crops, one per call (this model loses
+  accuracy with multiple images per call). ~15–20s per combat read; runs only during combat
+  and on demand (connect / after a command), never on an idle timer. No Tesseract needed.
+- **`cv`** — OpenCV template matching + Tesseract OCR. Fast, but fragile on the cluttered
+  scene and needs calibration + a Tesseract install.
 
 Why not keyboard or mouse automation? StS keyboard control is incomplete (you can pick cards
 with `1..9` but still need the mouse to target/play), and mouse automation is brittle. The
@@ -18,8 +27,9 @@ game is, however, 100% playable on a gamepad via a focus cursor — so we drive 
 Milestone-based build (see `~/.claude/plans/this-is-an-empty-binary-spark.md`):
 
 - **M0 Scaffold** — schema, config, capture, WebSocket host↔client loop. ✓
-- **M1 State read** — combat classifier + parser, template/OCR backend, asset
-  extraction, calibration overlay. ✓ *(pixel regions need on-device calibration — see below)*
+- **M1 State read** — combat classifier + dual parser (local LLM vision / OpenCV), region
+  calibration overlay. ✓ *Validated end-to-end on a real combat screenshot with
+  `gemma4:e4b-it-qat`: both enemies, full hand (names+costs), HP/energy/block all correct.*
 - **M2** — Textual combat dashboard client. ← next
 - **M3** — gamepad input executor with closed-loop focus navigation.
 - **M4** — command validation, push-on-change, recovery.

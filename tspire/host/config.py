@@ -29,10 +29,20 @@ class HostConfig:
     # Substring used to find the Slay the Spire window (case-insensitive).
     window_title: str = "Slay the Spire"
 
-    # Path to the tesseract executable; empty -> rely on PATH.
+    # Path to the tesseract executable; empty -> rely on PATH. (Only used by the "cv"
+    # vision mode; the default "llm" mode needs no Tesseract.)
     tesseract_cmd: str = ""
 
-    # Polling interval (seconds) for the capture loop when idle.
+    # Vision mode: "llm" (Ollama vision model, robust) or "cv" (OpenCV+Tesseract).
+    vision_mode: str = "llm"
+    # Ollama connection + model for vision_mode == "llm".
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "gemma4:e4b-it-qat"
+    # Width the full frame is downscaled to before sending to the model (px).
+    llm_image_width: int = 1024
+
+    # Polling interval (seconds) for the capture loop when idle. Ignored for expensive
+    # (LLM) providers, which only read on connect / after commands / on a state request.
     poll_interval: float = 0.5
 
     # If true, the input executor logs button sequences instead of sending them.

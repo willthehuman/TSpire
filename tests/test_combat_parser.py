@@ -36,13 +36,20 @@ def test_classify_detects_combat():
     assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.COMBAT
 
 
-def test_classify_unknown_without_monsters():
+def test_classify_combat_independent_of_monster_detection():
+    # The cheap classifier keys on energy + End-Turn only (the LLM finds monsters), so it
+    # detects combat even when red-bar detection sees nothing.
     backend = _backend(monsters=[])
-    assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.UNKNOWN
+    assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.COMBAT
 
 
 def test_classify_unknown_without_energy():
     backend = _backend(monsters=[FakeMonster(left=600, hp=40, hp_max=44)], energy_filled=False)
+    assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.UNKNOWN
+
+
+def test_classify_unknown_without_end_turn():
+    backend = _backend(monsters=[FakeMonster(left=600, hp=40, hp_max=44)], end_turn_filled=False)
     assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.UNKNOWN
 
 

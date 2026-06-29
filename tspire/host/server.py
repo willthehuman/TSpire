@@ -142,7 +142,14 @@ class HostServer:
         await self.push_state()
 
     async def poll_loop(self) -> None:
-        """Periodically refresh state so clients see passive changes."""
+        """Periodically refresh state so clients see passive changes.
+
+        Skipped for expensive (LLM) providers, which would be hammered by a timer; those
+        push on connect and after each command instead.
+        """
+        if getattr(self.session.state_provider, "expensive", False):
+            log.info("expensive state provider: idle polling disabled (reads on demand)")
+            await asyncio.Future()  # idle forever; reads happen on connect / after commands
         while True:
             await asyncio.sleep(self.session.config.poll_interval)
             if self.clients:
@@ -162,7 +169,7 @@ def build_session(config: HostConfig) -> GameSession:
     M3: command_handler = GamepadCommandHandler(config)
     """
     state_provider: StateProvider
-    missing = _missing_host_deps()
+    missing = _missing_host_deps(config.vision_mode)
     if missing:
         # Host vision extras not installed -> fall back to stub so the loop still runs
         # (useful on a dev box without the full host stack).
@@ -177,10 +184,15 @@ def build_session(config: HostConfig) -> GameSession:
     return GameSession(config, state_provider=state_provider)
 
 
-def _missing_host_deps() -> list[str]:
+def _missing_host_deps(vision_mode: str) -> list[str]:
     import importlib.util
 
-    return [m for m in ("mss", "cv2", "numpy", "pytesseract") if importlib.util.find_spec(m) is None]
+    # LLM mode talks to Ollama over HTTP (stdlib) and only uses OpenCV for crops/classify;
+    # CV mode additionally needs Tesseract via pytesseract.
+    required = ["mss", "cv2", "numpy"]
+    if vision_mode == "cv":
+        required.append("pytesseract")
+    return [m for m in required if importlib.util.find_spec(m) is None]
 
 
 def main() -> None:

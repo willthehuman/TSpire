@@ -1,7 +1,17 @@
 """ScreenStateProvider: capture -> classify -> parse -> GameState.
 
-This is the real StateProvider wired into the server (replacing M0's stub). It owns the
-window capture, the resolution's region map, the vision backend, and the template DB.
+The real StateProvider wired into the server. Two parsing backends, chosen by
+config.vision_mode:
+
+  * "llm" (default) - OllamaVisionParser reads monsters + hand with a local vision model;
+    fixed player stats come from upscaled-crop calls. Robust on the busy scene. Marked
+    `expensive` so the server only reads on demand (connect / after a command / state
+    request), never on the idle poll timer.
+  * "cv" - the OpenCV + Tesseract parser (fast, but needs calibration + Tesseract).
+
+Either way a cheap OpenCV check (energy + End-Turn regions filled) gates whether we are in
+combat, so the expensive parse never runs off a non-combat screen.
+
 Reads are defensive: capture/parse failures degrade to an UNKNOWN state with a message
 rather than raising, so the server loop keeps running.
 """
@@ -16,11 +26,10 @@ from tspire.common.schema import GameState, ScreenType
 from tspire.host.capture import WindowCapture, WindowNotFoundError
 from tspire.host.config import HostConfig
 from tspire.host.vision import region_map_for
-from tspire.host.vision.combat import parse_combat
 
 log = logging.getLogger("tspire.host.state")
 
-# Default location of the extracted template DB (see tools/extract_assets.py).
+# Default location of the extracted template DB (used by the "cv" mode).
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "assets" / "templates"
 
 
@@ -29,7 +38,10 @@ class ScreenStateProvider:
         self.config = config
         self.capture = WindowCapture(config.window_title)
         self.regions = region_map_for(config.width, config.height)
-        self._backend = None  # built lazily so import/tests don't require cv2/tesseract
+        # LLM parsing is slow (~seconds) -> the server must not poll it on a timer.
+        self.expensive = config.vision_mode == "llm"
+        self._backend = None  # OpenCV backend (classify, and cv-mode parsing)
+        self._llm = None  # OllamaVisionParser (llm mode)
 
     def _get_backend(self):
         if self._backend is None:
@@ -39,6 +51,18 @@ class ScreenStateProvider:
             templates = TemplateDB(_TEMPLATES_DIR)
             self._backend = CvVisionBackend(self.config.tesseract_cmd, templates=templates)
         return self._backend
+
+    def _get_llm(self):
+        if self._llm is None:
+            from tspire.host.vision.llm import OllamaVisionParser
+
+            self._llm = OllamaVisionParser(
+                model=self.config.ollama_model,
+                url=self.config.ollama_url,
+                regions=self.regions,
+                image_width=self.config.llm_image_width,
+            )
+        return self._llm
 
     def read(self) -> GameState:
         try:
@@ -50,9 +74,9 @@ class ScreenStateProvider:
                 available_commands=protocol.commands_for_screen(ScreenType.NONE.value),
             )
 
-        backend = self._get_backend()
         from tspire.host.classify import classify_screen
 
+        backend = self._get_backend()
         screen = classify_screen(frame, self.regions, backend)
         if screen == ScreenType.COMBAT:
             return self._build_combat_state(frame, backend)
@@ -61,18 +85,24 @@ class ScreenStateProvider:
             screen_type=screen,
             screen_message="screen not yet supported by parser (v1 = combat only)",
             available_commands=protocol.commands_for_screen(screen.value),
-            gold=backend.ocr_int(frame, self.regions.gold),
         )
 
     def _build_combat_state(self, frame, backend) -> GameState:
-        result = parse_combat(frame, self.regions, backend)
+        if self.config.vision_mode == "llm":
+            # Only pay for a block-reading call when a block badge is actually visible.
+            read_block = backend.region_filled(frame, self.regions.player_block)
+            result = self._get_llm().parse_combat(frame, read_block=read_block)
+        else:
+            from tspire.host.vision.combat import parse_combat
+
+            result = parse_combat(frame, self.regions, backend)
+
         player = result.combat.player
         return GameState(
             screen_type=ScreenType.COMBAT,
             in_combat=True,
             current_hp=player.current_hp,
             max_hp=player.max_hp,
-            gold=backend.ocr_int(frame, self.regions.gold),
             combat_state=result.combat,
             available_commands=protocol.commands_for_screen(ScreenType.COMBAT.value),
             parse_confidence=round(result.confidence, 2),

@@ -65,13 +65,20 @@ class CvVisionBackend:
     """OpenCV + Tesseract implementation."""
 
     def __init__(self, tesseract_cmd: str = "", templates=None) -> None:
-        import pytesseract  # noqa: F401  (validate availability early)
-
-        if tesseract_cmd:
-            import pytesseract as pt
-
-            pt.pytesseract.tesseract_cmd = tesseract_cmd
+        # pytesseract is imported lazily (in OCR methods) so the LLM vision mode, and the
+        # calibrate/classify paths, run on OpenCV alone without requiring Tesseract.
+        self.tesseract_cmd = tesseract_cmd
+        self._tesseract_ready = False
         self.templates = templates  # optional TemplateDB for classify_box
+
+    def _ensure_tesseract(self) -> None:
+        if self._tesseract_ready:
+            return
+        import pytesseract
+
+        if self.tesseract_cmd:
+            pytesseract.pytesseract.tesseract_cmd = self.tesseract_cmd
+        self._tesseract_ready = True
 
     # --- cropping ---------------------------------------------------------
     @staticmethod
@@ -98,6 +105,7 @@ class CvVisionBackend:
     def ocr_text(self, frame: "np.ndarray", rect: Rect, *, digits: bool = False) -> str:
         import pytesseract
 
+        self._ensure_tesseract()
         img = self._preprocess(self._crop(frame, rect))
         if img.size == 0:
             return ""
@@ -141,21 +149,24 @@ class CvVisionBackend:
         off_left, off_top, _, _ = search.to_pixels(w, h)
 
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        # Red wraps around hue 0; combine the two ends.
-        mask = cv2.inRange(hsv, (0, 100, 80), (10, 255, 255)) | cv2.inRange(
-            hsv, (170, 100, 80), (180, 255, 255)
+        # Pure, saturated red only. Narrow hue at both wrap-around ends excludes the
+        # orange torch flames (hue ~10-25) that the old wider range caught.
+        mask = cv2.inRange(hsv, (0, 130, 70), (8, 255, 255)) | cv2.inRange(
+            hsv, (172, 130, 70), (180, 255, 255)
         )
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 15), np.uint8))
+        # Close horizontally to bridge the bright/depleted split within one HP bar.
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 31), np.uint8))
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        bars: list[BBox] = []
         roi_h, roi_w = roi.shape[:2]
+        bars: list[BBox] = []
         for c in contours:
             x, y, cw, ch = cv2.boundingRect(c)
-            # HP bars are wide, short, and a meaningful fraction of the search width.
-            if cw < 0.04 * roi_w or ch < 0.004 * roi_h:
+            # Within the ground-line band, HP bars are the wide, thin, horizontal strips.
+            # Width floor + height window + aspect reject background-red blobs.
+            if cw < 0.14 * roi_w or not (0.04 * roi_h <= ch <= 0.22 * roi_h):
                 continue
-            if cw / max(ch, 1) < 3.0:  # must be clearly horizontal
+            if cw / max(ch, 1) < 5.0:
                 continue
             bars.append(BBox(left=off_left + x, top=off_top + y, width=cw, height=ch))
         bars.sort(key=lambda b: b.left)
@@ -179,17 +190,21 @@ class CvVisionBackend:
         off_left, off_top, _, _ = search.to_pixels(w, h)
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, 90, 255, cv2.THRESH_BINARY)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        _, mask = cv2.threshold(gray, 70, 255, cv2.THRESH_BINARY)
+        # Open to drop speckle, then close vertically to fuse each card's interior.
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 3), np.uint8))
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         roi_h, roi_w = roi.shape[:2]
         cards: list[BBox] = []
         for c in contours:
             x, y, cw, ch = cv2.boundingRect(c)
-            if ch < 0.4 * roi_h or cw < 0.04 * roi_w:
+            # Cards are the tall bright regions in the hand band. Overlapping fans can
+            # make them wider/narrower than ideal, so keep the aspect window loose.
+            if ch < 0.25 * roi_h or cw < 0.05 * roi_w:
                 continue
-            if not (0.45 < cw / max(ch, 1) < 1.0):  # portrait, card-ish
+            if cw / max(ch, 1) > 1.3:  # reject wide blobs; allow portrait + slim slivers
                 continue
             cards.append(BBox(left=off_left + x, top=off_top + y, width=cw, height=ch))
         cards.sort(key=lambda b: b.left)
