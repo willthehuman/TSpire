@@ -34,19 +34,24 @@ Milestone-based build (see `~/.claude/plans/this-is-an-empty-binary-spark.md`):
 - **M3** — gamepad input executor with closed-loop focus navigation.
 - **M4** — command validation, push-on-change, recovery.
 
+## Game art (relics / intents)
+
+Relic and intent identity is recognized by matching against the game's **own art, read
+directly from the installed `desktop-1.0.jar` at runtime** — no assets are bundled, and this
+only works when the game is installed. The jar is auto-detected (project dir, then Steam
+libraries via the registry + `libraryfolders.vdf`); override with `jar_path` in config or
+`TSPIRE_JAR_PATH`. Matching uses alpha-masked HSV colour histograms (validated: Burning Blood
+@ 0.99). *Potions* have no per-potion image in the jar (they're a shape sprite tinted at
+runtime), so they need shape-match + a colour→potion table — not yet implemented.
+
 ## Calibration (one-time, on the gaming PC)
 
-The vision region coordinates and detection thresholds ship as **estimates for 1920×1080**
-and must be tuned to your real screen:
+Region coordinates and detection thresholds ship as **estimates for 1920×1080** and must be
+tuned to your real screen. Overlay them on a live or saved combat frame and adjust
+`tspire/host/vision/regions.py`:
 
 ```bash
-# 1) Build the template DB from the game's own art:
-python -m tools.extract_assets --jar "C:/.../SlayTheSpire/desktop-1.0.jar"
-
-# 2) Overlay the regions on a real (or saved) combat screenshot and adjust
-#    tspire/host/vision/regions.py until the green boxes line up and m#/c# boxes
-#    land on monsters/cards:
-python -m tspire.host.calibrate                 # live capture
+python -m tspire.host.calibrate                   # live capture
 python -m tspire.host.calibrate --image shot.png  # or a saved screenshot
 ```
 

@@ -29,6 +29,10 @@ class HostConfig:
     # Substring used to find the Slay the Spire window (case-insensitive).
     window_title: str = "Slay the Spire"
 
+    # Path to the game's desktop-1.0.jar (relic/intent art is read from it at runtime).
+    # Empty -> auto-detect (project dir, then Steam libraries). See game_assets.find_game_jar.
+    jar_path: str = ""
+
     # Path to the tesseract executable; empty -> rely on PATH. (Only used by the "cv"
     # vision mode; the default "llm" mode needs no Tesseract.)
     tesseract_cmd: str = ""
@@ -68,6 +72,8 @@ class HostConfig:
             self.port = int(env["TSPIRE_PORT"])
         if "TSPIRE_WINDOW_TITLE" in env:
             self.window_title = env["TSPIRE_WINDOW_TITLE"]
+        if "TSPIRE_JAR_PATH" in env:
+            self.jar_path = env["TSPIRE_JAR_PATH"]
         if "TSPIRE_TESSERACT_CMD" in env:
             self.tesseract_cmd = env["TSPIRE_TESSERACT_CMD"]
         if "TSPIRE_INPUT_DRY_RUN" in env:

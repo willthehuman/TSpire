@@ -19,18 +19,15 @@ rather than raising, so the server loop keeps running.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from tspire.common import protocol
 from tspire.common.schema import GameState, ScreenType
 from tspire.host.capture import WindowCapture, WindowNotFoundError
 from tspire.host.config import HostConfig
+from tspire.host.game_assets import find_game_jar
 from tspire.host.vision import region_map_for
 
 log = logging.getLogger("tspire.host.state")
-
-# Default location of the extracted template DB (used by the "cv" mode).
-_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "assets" / "templates"
 
 
 class ScreenStateProvider:
@@ -48,7 +45,11 @@ class ScreenStateProvider:
             from tspire.host.vision.backend import CvVisionBackend
             from tspire.host.vision.templates import TemplateDB
 
-            templates = TemplateDB(_TEMPLATES_DIR)
+            jar = find_game_jar(self.config.jar_path)
+            if jar is None:
+                log.warning("desktop-1.0.jar not found; relic/intent art unavailable. "
+                            "Set jar_path in config or install the game.")
+            templates = TemplateDB(jar) if jar else None
             self._backend = CvVisionBackend(self.config.tesseract_cmd, templates=templates)
         return self._backend
 
