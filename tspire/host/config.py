@@ -28,6 +28,9 @@ class HostConfig:
 
     # Substring used to find the Slay the Spire window (case-insensitive).
     window_title: str = "Slay the Spire"
+    # Bring the game to the foreground before screen capture/input. mss captures screen
+    # pixels, so an occluding window would otherwise be captured over the game rectangle.
+    focus_before_capture: bool = True
 
     # Path to the game's desktop-1.0.jar (relic/intent art is read from it at runtime).
     # Empty -> auto-detect (project dir, then Steam libraries). See game_assets.find_game_jar.
@@ -51,6 +54,13 @@ class HostConfig:
 
     # If true, the input executor logs button sequences instead of sending them.
     input_dry_run: bool = False
+    # If true, the RAW protocol command accepts low-level input tokens.
+    input_raw_enabled: bool = False
+    # Gamepad executor timings, in seconds.
+    input_press_seconds: float = 0.06
+    input_step_delay: float = 0.08
+    input_settle_seconds: float = 0.25
+    input_command_timeout: float = 30.0
 
     @classmethod
     def load(cls, path: str | os.PathLike[str] | None = None) -> "HostConfig":
@@ -72,12 +82,32 @@ class HostConfig:
             self.port = int(env["TSPIRE_PORT"])
         if "TSPIRE_WINDOW_TITLE" in env:
             self.window_title = env["TSPIRE_WINDOW_TITLE"]
+        if "TSPIRE_FOCUS_BEFORE_CAPTURE" in env:
+            self.focus_before_capture = env["TSPIRE_FOCUS_BEFORE_CAPTURE"].lower() in {"1", "true", "yes"}
         if "TSPIRE_JAR_PATH" in env:
             self.jar_path = env["TSPIRE_JAR_PATH"]
         if "TSPIRE_TESSERACT_CMD" in env:
             self.tesseract_cmd = env["TSPIRE_TESSERACT_CMD"]
+        if "TSPIRE_VISION_MODE" in env:
+            self.vision_mode = env["TSPIRE_VISION_MODE"]
+        if "TSPIRE_OLLAMA_URL" in env:
+            self.ollama_url = env["TSPIRE_OLLAMA_URL"]
+        if "TSPIRE_OLLAMA_MODEL" in env:
+            self.ollama_model = env["TSPIRE_OLLAMA_MODEL"]
+        if "TSPIRE_LLM_IMAGE_WIDTH" in env:
+            self.llm_image_width = int(env["TSPIRE_LLM_IMAGE_WIDTH"])
         if "TSPIRE_INPUT_DRY_RUN" in env:
             self.input_dry_run = env["TSPIRE_INPUT_DRY_RUN"].lower() in {"1", "true", "yes"}
+        if "TSPIRE_INPUT_RAW" in env:
+            self.input_raw_enabled = env["TSPIRE_INPUT_RAW"].lower() in {"1", "true", "yes"}
+        if "TSPIRE_INPUT_PRESS_SECONDS" in env:
+            self.input_press_seconds = float(env["TSPIRE_INPUT_PRESS_SECONDS"])
+        if "TSPIRE_INPUT_STEP_DELAY" in env:
+            self.input_step_delay = float(env["TSPIRE_INPUT_STEP_DELAY"])
+        if "TSPIRE_INPUT_SETTLE_SECONDS" in env:
+            self.input_settle_seconds = float(env["TSPIRE_INPUT_SETTLE_SECONDS"])
+        if "TSPIRE_INPUT_COMMAND_TIMEOUT" in env:
+            self.input_command_timeout = float(env["TSPIRE_INPUT_COMMAND_TIMEOUT"])
 
     def save(self, path: str | os.PathLike[str] | None = None) -> None:
         cfg_path = Path(path) if path else Path.cwd() / CONFIG_FILENAME

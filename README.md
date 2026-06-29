@@ -32,7 +32,7 @@ Milestone-based build (see `~/.claude/plans/this-is-an-empty-binary-spark.md`):
   `gemma4:e4b-it-qat`: both enemies, full hand (names+costs), HP/energy/block all correct.*
 - **M2 Client render** — Textual combat dashboard (top bar, enemies+intents, player, hand),
   friendly command parser, keybindings, reconnecting WebSocket client. ✓
-- **M3** — gamepad input executor with closed-loop focus navigation.
+- **M3** — gamepad input executor with closed-loop combat focus navigation. ✓
 - **M4** — command validation, push-on-change, recovery.
 
 ## Game art (relics / intents)
@@ -48,7 +48,7 @@ libraries via the registry + `libraryfolders.vdf`); override with `jar_path` in 
 colour category, read from the class constant pools — dump it with
 `python -m tspire.host.vision.potions`). *Identifying* a potion from its tiny belt icon is
 not reliable by CV/vision (the flask shapes are too similar at ~25px), so reliable potion ID
-will use the focus-cursor tooltip once input (M3) lands: focusing a potion renders its name
+will use the focus-cursor tooltip in a later input pass: focusing a potion renders its name
 as text. Relic/potion identity isn't needed for turn-to-turn combat.
 
 ## Calibration (one-time, on the gaming PC)
@@ -98,9 +98,44 @@ python -m tspire.client.app --host <gaming-pc-ip>
 
 The client shows a combat dashboard (enemies with intents + damage, your block/energy/powers,
 your hand with costs) and takes typed commands. **Commands** (indices from the dashboard):
-`play <i> [t]` (`p`), `end` (`e`), `potion use/discard <i>`, `proceed`, `back`, `state` (`r`),
-`?` help. Keys: `q` quit, `r` refresh, `?` help. (Input execution is M3; until then the host
-acks commands but doesn't yet drive the game.)
+`play <i> [t]` (`p`), `end` (`e`), `proceed`, `back`, `state` (`r`), `?` help. Keys:
+`q` quit, `r` refresh, `?` help. Potion use/discard is deferred until focus-tooltip reading
+is reliable.
+
+M3 sends a virtual Xbox360 controller, so Slay the Spire's controller support must be
+enabled in-game. Start with `TSPIRE_INPUT_DRY_RUN=true` to log planned button sequences
+without touching the controller.
+
+**Controller detection (verified on a real run — important):**
+
+- **Start the host *before* launching Slay the Spire.** The game does **not** hot-plug
+  controllers — it only detects pads present at startup. Run the host (which creates the
+  virtual pad) first, then launch the game, so it sees the controller. A pad created while
+  the game is already running is ignored.
+- **Disable Steam Input for Slay the Spire** (Steam → right-click the game → Properties →
+  Controller → *Disable Steam Input*). Otherwise Steam captures the virtual XInput pad
+  (you'll see Steam's "Xbox 360 controller connected/disconnected" toasts) and the game
+  receives nothing.
+- Confirm **Controller Enabled** is on in the in-game settings.
+
+When it's working you'll see the game switch to controller mode: a card lifts/focuses with
+its tooltip and on-screen button prompts (X / Y / LT / RT) appear.
+
+### Verify controller input
+
+Before trusting any combat command, confirm StS actually detects the virtual pad. With the
+game in a combat (several cards in hand, controller support enabled):
+
+```bash
+python -m tspire.host.input_probe --sequence left,left,right,right
+python -m tspire.host.input_probe --dry-run --hand-count 5   # offline wiring check
+```
+
+The probe foregrounds the window, sends the sequence, and prints the observed card-focus
+index after each press. **PASS** means the focus moved (the game sees the pad);
+**FAIL**/**INCONCLUSIVE** point at the likely cause (window focus, the in-game `Controller
+Enabled` setting, ViGEmBus/`vgamepad`, or the focus-glow thresholds). Use `--hand-count N`
+to skip the (slow) state read, plus `--press-seconds`/`--settle` to tune timing.
 
 ## Configuration
 
@@ -108,6 +143,12 @@ Host config loads from `tspire_host.json` in the working directory (see
 `tspire/host/config.py`), overridable via `TSPIRE_*` env vars. v1 expects the game in
 windowed/borderless mode at a fixed resolution (default 1920×1080); vision region maps are
 keyed on it.
+
+Useful env overrides: `TSPIRE_VISION_MODE`, `TSPIRE_OLLAMA_URL`,
+`TSPIRE_OLLAMA_MODEL`, `TSPIRE_LLM_IMAGE_WIDTH`, `TSPIRE_TESSERACT_CMD`,
+`TSPIRE_INPUT_DRY_RUN`, `TSPIRE_INPUT_RAW`, `TSPIRE_INPUT_PRESS_SECONDS`,
+`TSPIRE_INPUT_STEP_DELAY`, `TSPIRE_INPUT_SETTLE_SECONDS`, and
+`TSPIRE_INPUT_COMMAND_TIMEOUT`.
 
 ## Develop
 

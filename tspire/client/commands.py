@@ -32,6 +32,7 @@ _ALIASES = {
     "r": protocol.Verb.STATE,
     "refresh": protocol.Verb.STATE,
     "state": protocol.Verb.STATE,
+    "raw": protocol.Verb.RAW,
 }
 
 
@@ -56,7 +57,7 @@ def parse_line(line: str, available_commands: list[str]) -> ParseResult:
     if verb is None:
         return ParseResult(command=None, error=f"unknown command {head!r}. Type ? for help.")
 
-    if verb not in available_commands and verb != protocol.Verb.STATE:
+    if verb not in available_commands and verb not in {protocol.Verb.STATE, protocol.Verb.RAW}:
         return ParseResult(
             command=None,
             error=f"'{head}' isn't available on this screen (valid: {', '.join(available_commands)}).",
@@ -89,6 +90,10 @@ def _build(verb: str, rest: list[str]) -> protocol.Command:
     if verb in (protocol.Verb.CHOOSE,):
         idx = _index(rest, 0, "choice")
         return protocol.Command(verb=verb, args=[str(idx)])
+    if verb == protocol.Verb.RAW:
+        if not rest:
+            raise ValueError("raw needs at least one gamepad token.")
+        return protocol.Command(verb=verb, args=rest)
     # end / proceed / return / state take no args.
     return protocol.Command(verb=verb, args=[])
 
@@ -108,10 +113,10 @@ HELP_TEXT = (
     "Commands:\n"
     "  play <i> [t]   play card i (optionally on target t)   alias: p\n"
     "  end            end your turn                          alias: e\n"
-    "  potion use <i> [t] / potion discard <i>               alias: pot\n"
     "  proceed        confirm / advance                      alias: space\n"
     "  back           cancel / return                        alias: b\n"
     "  state          re-read the screen                     alias: r\n"
+    "  raw <tokens>   debug-only gamepad tokens (host gated)\n"
     "  ?              this help\n"
     "Indices are the numbers shown beside each card / enemy / potion."
 )

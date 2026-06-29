@@ -30,7 +30,10 @@ def _load_frame(args, config: HostConfig):
         return frame
     from tspire.host.capture import WindowCapture
 
-    return WindowCapture(config.window_title).grab()
+    return WindowCapture(
+        config.window_title,
+        focus_before_capture=config.focus_before_capture,
+    ).grab()
 
 
 def main() -> None:

@@ -3,6 +3,8 @@
 from tspire.common.schema import Intent
 from tspire.host.vision.llm import (
     _ENERGY_PROMPT,
+    _loads_json_object,
+    _pair_values,
     OllamaVisionParser,
 )
 from tspire.host.vision.regions import RegionMap
@@ -27,9 +29,26 @@ def test_to_monster_unknown_intent_falls_back():
     assert m.intent == Intent.UNKNOWN
 
 
+def test_to_monster_accepts_hp_string_alias():
+    m = OllamaVisionParser._to_monster({"hp": "17/23", "intent": "attack", "intent_value": "7"}, 0)
+    assert (m.current_hp, m.max_hp, m.intent_damage) == (17, 23, 7)
+
+
 def test_to_card_reads_name_and_cost():
     c = OllamaVisionParser._to_card({"name": "Bash", "cost": 2}, index=1)
     assert (c.index, c.name, c.cost, c.is_playable) == (1, "Bash", 2, True)
+
+
+def test_loads_json_object_accepts_markdown_fence():
+    assert _loads_json_object("```json\n{\"enemies\": []}\n```") == {"enemies": []}
+
+
+def test_loads_json_object_accepts_key_value_response():
+    assert _loads_json_object("current: 80, max: 80") == {"current": 80, "max": 80}
+
+
+def test_pair_values_accepts_hp_string():
+    assert _pair_values({"hp": "80/80"}) == (80, 80)
 
 
 def test_parse_combat_assembles_state_without_network(monkeypatch):

@@ -181,7 +181,11 @@ def build_session(config: HostConfig) -> GameSession:
 
         state_provider = ScreenStateProvider(config)
         log.info("vision state provider active")
-    return GameSession(config, state_provider=state_provider)
+    from tspire.host.input.executor import GamepadCommandHandler
+
+    command_handler = GamepadCommandHandler(config, state_provider)
+    log.info("gamepad command handler active")
+    return GameSession(config, state_provider=state_provider, command_handler=command_handler)
 
 
 def _missing_host_deps(vision_mode: str) -> list[str]:

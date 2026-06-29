@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import urllib.request
 
 from tspire.common.schema import Card, CombatState, Intent, Monster, PlayerCombat
@@ -137,8 +138,10 @@ class OllamaVisionParser:
         player = PlayerCombat(
             current_hp=hp, max_hp=hp_max, block=block, energy=energy
         )
-        monsters = [self._to_monster(m, i) for i, m in enumerate(scene.get("monsters", []))]
-        hand = [self._to_card(c, i) for i, c in enumerate(scene.get("hand", []))]
+        monsters_data = scene.get("monsters", scene.get("enemies", []))
+        hand_data = scene.get("hand", scene.get("cards", []))
+        monsters = [self._to_monster(m, i) for i, m in enumerate(monsters_data)]
+        hand = [self._to_card(c, i) for i, c in enumerate(hand_data)]
         combat = CombatState(player=player, monsters=monsters, hand=hand)
 
         # Confidence: did we get the basics? (hp read + at least one monster + a hand)
@@ -155,7 +158,7 @@ class OllamaVisionParser:
         crop = self._encode(self._crop_upscaled(frame, rect))
         try:
             data = self._generate(prompt, [crop], _PAIR_SCHEMA)
-            return int(data.get("current", 0)), int(data.get("max", 0))
+            return _pair_values(data)
         except OllamaError:
             return 0, 0
 
@@ -188,7 +191,7 @@ class OllamaVisionParser:
             raise OllamaError(f"Ollama request failed: {exc}") from exc
         text = body.get("response", "").strip()
         try:
-            return json.loads(text)
+            return _loads_json_object(text)
         except json.JSONDecodeError as exc:
             raise OllamaError(f"model did not return valid JSON: {text[:200]}") from exc
 
@@ -225,21 +228,97 @@ class OllamaVisionParser:
         name = str(data.get("name") or "").strip()
         if name.lower() in {"none", "unknown", "enemy"}:
             name = ""
+        current_hp, max_hp = _hp_values(data)
         return Monster(
             name=name,
-            current_hp=int(data.get("current_hp", 0)),
-            max_hp=int(data.get("max_hp", 0)),
-            block=int(data.get("block", 0)),
+            current_hp=current_hp,
+            max_hp=max_hp,
+            block=_intish(data.get("block", 0), 0),
             intent=intent,
-            intent_damage=int(data.get("intent_value", 0)),
+            intent_damage=_intish(data.get("intent_value", 0), 0),
             index=index,
         )
 
     @staticmethod
     def _to_card(data: dict, index: int) -> Card:
         return Card(
-            name=str(data.get("name") or "").strip(),
-            cost=int(data.get("cost", -1)),
+            name=str(data.get("name") or data.get("card") or "").strip(),
+            cost=_intish(data.get("cost", -1), -1),
             is_playable=True,
             index=index,
         )
+
+
+def _loads_json_object(text: str) -> dict:
+    """Load JSON from strict output, fenced markdown, or text with one JSON object."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\s*```$", "", stripped)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start >= 0 and end > start:
+            data = json.loads(stripped[start : end + 1])
+        else:
+            data = _loads_key_value_object(stripped)
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError("expected JSON object", stripped, 0)
+    return data
+
+
+def _loads_key_value_object(text: str) -> dict:
+    pairs = re.findall(r"([A-Za-z_][\w ]*)\s*:\s*([^,\n]+)", text)
+    if not pairs:
+        raise json.JSONDecodeError("expected JSON object", text, 0)
+    data = {}
+    for key, value in pairs:
+        clean_key = key.strip().lower().replace(" ", "_")
+        clean_value = value.strip().strip('"').strip("'")
+        data[clean_key] = _intish(clean_value, clean_value)
+    return data
+
+
+def _hp_values(data: dict) -> tuple[int, int]:
+    current = _intish(data.get("current_hp", data.get("current", 0)), 0)
+    maximum = _intish(data.get("max_hp", data.get("max", 0)), 0)
+    if (current, maximum) != (0, 0):
+        return current, maximum
+    hp = data.get("hp", data.get("health", ""))
+    if isinstance(hp, str):
+        nums = [int(n) for n in re.findall(r"\d+", hp)]
+        if len(nums) >= 2:
+            return nums[0], nums[1]
+        if len(nums) == 1:
+            return nums[0], nums[0]
+    return 0, 0
+
+
+def _pair_values(data: dict) -> tuple[int, int]:
+    current = _intish(data.get("current", data.get("current_hp", 0)), 0)
+    maximum = _intish(data.get("max", data.get("max_hp", 0)), 0)
+    if (current, maximum) != (0, 0):
+        return current, maximum
+    for key in ("hp", "health", "energy", "value"):
+        value = data.get(key)
+        if isinstance(value, str):
+            nums = [int(n) for n in re.findall(r"\d+", value)]
+            if len(nums) >= 2:
+                return nums[0], nums[1]
+            if len(nums) == 1:
+                return nums[0], nums[0]
+    return 0, 0
+
+
+def _intish(value, default: int = 0) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        m = re.search(r"-?\d+", value)
+        if m:
+            return int(m.group())
+    return default

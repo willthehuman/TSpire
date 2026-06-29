@@ -41,7 +41,7 @@ class Verb:
 # Verbs valid on each screen. The host fills GameState.available_commands from this so
 # the client can disable impossible actions. STATE is always allowed (read-only).
 COMMANDS_BY_SCREEN: dict[str, list[str]] = {
-    "COMBAT": [Verb.PLAY, Verb.END, Verb.POTION, Verb.STATE],
+    "COMBAT": [Verb.PLAY, Verb.END, Verb.PROCEED, Verb.RETURN, Verb.STATE],
     "NONE": [Verb.STATE, Verb.PROCEED],
     "UNKNOWN": [Verb.STATE, Verb.PROCEED, Verb.RETURN],
 }

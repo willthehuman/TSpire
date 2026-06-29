@@ -33,7 +33,10 @@ log = logging.getLogger("tspire.host.state")
 class ScreenStateProvider:
     def __init__(self, config: HostConfig) -> None:
         self.config = config
-        self.capture = WindowCapture(config.window_title)
+        self.capture = WindowCapture(
+            config.window_title,
+            focus_before_capture=config.focus_before_capture,
+        )
         self.regions = region_map_for(config.width, config.height)
         # LLM parsing is slow (~seconds) -> the server must not poll it on a timer.
         self.expensive = config.vision_mode == "llm"

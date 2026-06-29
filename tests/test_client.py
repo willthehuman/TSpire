@@ -18,7 +18,8 @@ import tests.test_schema as ts  # reuse _sample_state  # noqa: E402
 
 
 # --- command parser --------------------------------------------------------
-COMBAT = [protocol.Verb.PLAY, protocol.Verb.END, protocol.Verb.POTION, protocol.Verb.STATE]
+COMBAT = protocol.commands_for_screen("COMBAT")
+POTION_AVAILABLE = [*COMBAT, protocol.Verb.POTION]
 
 
 def test_parse_play():
@@ -37,13 +38,27 @@ def test_parse_end_alias():
 
 
 def test_parse_potion_use_and_discard():
-    assert parse_line("potion use 0 1", COMBAT).command.args == ["use", "0", "1"]
-    assert parse_line("pot discard 2", COMBAT).command.args == ["discard", "2"]
+    assert parse_line("potion use 0 1", POTION_AVAILABLE).command.args == ["use", "0", "1"]
+    assert parse_line("pot discard 2", POTION_AVAILABLE).command.args == ["discard", "2"]
+
+
+def test_combat_commands_defer_potions_for_m3():
+    assert protocol.Verb.POTION not in COMBAT
+    assert protocol.Verb.PLAY in COMBAT
+    assert protocol.Verb.END in COMBAT
+    assert protocol.Verb.PROCEED in COMBAT
+    assert protocol.Verb.RETURN in COMBAT
 
 
 def test_parse_empty_refreshes():
     r = parse_line("", COMBAT)
     assert r.command.verb == protocol.Verb.STATE and r.note
+
+
+def test_parse_raw_debug_command():
+    r = parse_line("raw a right", COMBAT)
+    assert r.command.verb == protocol.Verb.RAW
+    assert r.command.args == ["a", "right"]
 
 
 def test_parse_unknown_returns_error():
