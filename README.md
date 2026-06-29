@@ -30,7 +30,8 @@ Milestone-based build (see `~/.claude/plans/this-is-an-empty-binary-spark.md`):
 - **M1 State read** — combat classifier + dual parser (local LLM vision / OpenCV), region
   calibration overlay. ✓ *Validated end-to-end on a real combat screenshot with
   `gemma4:e4b-it-qat`: both enemies, full hand (names+costs), HP/energy/block all correct.*
-- **M2** — Textual combat dashboard client. ← next
+- **M2 Client render** — Textual combat dashboard (top bar, enemies+intents, player, hand),
+  friendly command parser, keybindings, reconnecting WebSocket client. ✓
 - **M3** — gamepad input executor with closed-loop focus navigation.
 - **M4** — command validation, push-on-change, recovery.
 
@@ -41,8 +42,14 @@ directly from the installed `desktop-1.0.jar` at runtime** — no assets are bun
 only works when the game is installed. The jar is auto-detected (project dir, then Steam
 libraries via the registry + `libraryfolders.vdf`); override with `jar_path` in config or
 `TSPIRE_JAR_PATH`. Matching uses alpha-masked HSV colour histograms (validated: Burning Blood
-@ 0.99). *Potions* have no per-potion image in the jar (they're a shape sprite tinted at
-runtime), so they need shape-match + a colour→potion table — not yet implemented.
+@ 0.99).
+
+**Potions** ship a jar-derived **metadata table** (every potion's name, flask shape, and
+colour category, read from the class constant pools — dump it with
+`python -m tspire.host.vision.potions`). *Identifying* a potion from its tiny belt icon is
+not reliable by CV/vision (the flask shapes are too similar at ~25px), so reliable potion ID
+will use the focus-cursor tooltip once input (M3) lands: focusing a potion renders its name
+as text. Relic/potion identity isn't needed for turn-to-turn combat.
 
 ## Calibration (one-time, on the gaming PC)
 
@@ -79,18 +86,21 @@ pip install -e ".[host]"
 # also install Tesseract OCR and ensure it is on PATH (or set tesseract_cmd in config)
 ```
 
-## Run (M0)
+## Run (M2 dashboard)
 
 ```bash
-# On the gaming PC:
+# On the gaming PC (StS running, Ollama up):
 python -m tspire.host.server -v
 
-# In a terminal (here or remote):
+# In any terminal (here or remote):
 python -m tspire.client.app --host <gaming-pc-ip>
 ```
 
-In M0 the host serves a stub state and echoes commands, so you can confirm the loop works
-before the parser and input executor land.
+The client shows a combat dashboard (enemies with intents + damage, your block/energy/powers,
+your hand with costs) and takes typed commands. **Commands** (indices from the dashboard):
+`play <i> [t]` (`p`), `end` (`e`), `potion use/discard <i>`, `proceed`, `back`, `state` (`r`),
+`?` help. Keys: `q` quit, `r` refresh, `?` help. (Input execution is M3; until then the host
+acks commands but doesn't yet drive the game.)
 
 ## Configuration
 
