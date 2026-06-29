@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Local host config (machine-specific resolution/paths)
+tspire_host.json
+
+# Extracted game art / templates (built locally from the game jar, not redistributable)
+tspire/assets/templates/
+
+# Test artifacts
+.pytest_cache/

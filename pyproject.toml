@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tspire"
+version = "0.1.0"
+description = "Play Slay the Spire from a remote terminal, without a mod (screen reading + virtual gamepad)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+# Core deps shared by host and client. Heavy/native deps are optional extras so the
+# client can be installed on a remote machine without the host's vision/input stack.
+dependencies = [
+    "websockets>=12.0",
+]
+
+[project.optional-dependencies]
+# Everything the host (gaming PC) needs to see the screen and act as a controller.
+host = [
+    "mss>=9.0",
+    "numpy>=1.26",
+    "opencv-python>=4.9",
+    "pytesseract>=0.3.10",
+    "pygetwindow>=0.0.9",
+    "vgamepad>=0.1.0",
+]
+# The terminal client.
+client = [
+    "textual>=0.60",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+tspire-host = "tspire.host.server:main"
+tspire-client = "tspire.client.app:main"
+tspire-calibrate = "tspire.host.calibrate:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tspire*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
