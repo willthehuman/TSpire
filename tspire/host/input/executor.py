@@ -52,6 +52,7 @@ class GamepadCommandHandler:
         self.driver = driver or build_driver(config, self.timing)
         self._observe_hand_count: int | None = None
         self._observe_target_count: int | None = None
+        self._foreground_failures = 0
         if observer is not None:
             self.observer = observer
         elif isinstance(self.driver, DryRunDriver):
@@ -168,21 +169,52 @@ class GamepadCommandHandler:
                 self._press("right")
             return True
 
-        for _ in range(2):
-            self._press("down")
-            for _ in range(hand_count + 2):
-                self._press("left")
-            if not self._wait_for_focus(hand_index=0):
-                continue
-            moved = True
-            for i in range(1, target + 1):
-                self._press("right")
-                if not self._wait_for_focus(hand_index=i):
-                    moved = False
-                    break
-            if moved:
+        # StS's hand cursor WRAPS and moves exactly one card per press (verified live). The
+        # focus observer is reliable mid-hand but can't see the edge cards (index 0 / last),
+        # whose lifted preview leaves no detectable gap. So anchor on a CONFIRMED index and
+        # step the computed wrap-aware distance; re-confirm when possible, and accept an
+        # unconfirmable edge as the deterministic destination. Self-corrects from any
+        # confirmed position if a press is dropped.
+        self._press("down")  # ensure the cursor is in the hand
+        anchor = self._establish_anchor(hand_count)
+        if anchor is None:
+            return False
+        for _ in range(4):
+            current = self._observe().hand_index
+            if current == target:
                 return True
+            ref = current if current is not None else anchor
+            steps = _hand_steps(ref, target, hand_count)
+            direction = "right" if steps > 0 else "left"
+            for _ in range(abs(steps)):
+                self._press(direction)
+                self._sleep(self.timing.settle_seconds)
+            anchor = target  # deterministic single-card-per-press landed us here
+            check = self._observe().hand_index
+            if check == target:
+                return True
+            if check is None and target in (0, hand_count - 1):
+                return True  # edge card: not CV-confirmable, but the step count is exact
         return False
+
+    def _establish_anchor(self, hand_count: int) -> int | None:
+        """Return a CONFIRMED hand index to navigate from.
+
+        The cursor may start on an edge card (which the observer can't read) or off the hand
+        entirely, so nudge it right one card at a time until a readable index appears.
+        """
+        deadline = time.monotonic() + self.timing.command_timeout
+        nudges = 0
+        while time.monotonic() <= deadline:
+            idx = self._observe().hand_index
+            if idx is not None:
+                return idx
+            if nudges >= hand_count + 1:
+                return None  # never found a readable slot (e.g. a degenerate tiny hand)
+            self._press("right")
+            nudges += 1
+            self._sleep(self.timing.settle_seconds)
+        return None
 
     def _focus_target(self, target: int, monsters: list[Monster]) -> bool:
         self._observe_target_count = len(monsters)
@@ -237,14 +269,29 @@ class GamepadCommandHandler:
                 return True
         return False
 
-    def _ensure_foreground(self) -> None:
+    def _ensure_foreground(self) -> bool:
         capture = getattr(self.state_provider, "capture", None)
-        focus = getattr(capture, "focus_window", None)
-        if focus is not None and not self._verification_bypassed:
-            try:
-                focus()
-            except Exception:
-                log.debug("could not foreground game window", exc_info=True)
+        ensure = getattr(capture, "ensure_foreground", None)
+        if ensure is None or self._verification_bypassed:
+            return True
+        try:
+            ok = bool(ensure())
+        except Exception:
+            log.debug("could not foreground game window", exc_info=True)
+            ok = False
+        if ok:
+            self._foreground_failures = 0
+        else:
+            self._foreground_failures += 1
+            # StS ignores controller input unless it is the foreground window, so a press
+            # sent now will be dropped. Warn the user (throttled) so they can act.
+            if self._foreground_failures == 1 or self._foreground_failures % 10 == 0:
+                log.warning(
+                    "could not bring Slay the Spire to the foreground; controller input may "
+                    "be ignored. Make sure the game window isn't minimized and nothing is "
+                    "forcing itself on top."
+                )
+        return ok
 
     def _observe(self) -> FocusState:
         return self.observer.observe(
@@ -284,6 +331,18 @@ def _monster_alive(monster: Monster) -> bool:
     if monster.is_gone or monster.half_dead:
         return False
     return monster.max_hp > 0 or monster.current_hp > 0
+
+
+def _hand_steps(current: int, target: int, hand_count: int) -> int:
+    """Signed shortest step count around the wrapping hand cursor (+right / -left)."""
+    right_steps = (target - current) % hand_count
+    left_steps = (current - target) % hand_count
+    return right_steps if right_steps <= left_steps else -left_steps
+
+
+def _hand_direction(current: int, target: int, hand_count: int) -> str:
+    """Shortest press direction around the wrapping hand cursor."""
+    return "right" if _hand_steps(current, target, hand_count) >= 0 else "left"
 
 
 def _range_exclusive(start: int, stop: int):

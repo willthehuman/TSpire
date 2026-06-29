@@ -61,7 +61,7 @@ def classify_result(observed: list[int | None]) -> tuple[str, str]:
             "'Disable Steam Input'), since Steam otherwise captures the pad. Then confirm "
             "the game is the foreground window and 'Controller Enabled' is on in-game. "
             "If the highlight DOES move on screen but this still reports None, the "
-            "cyan focus-glow thresholds in tspire/host/input/focus.py need tuning instead.",
+            "focus-detection thresholds in tspire/host/input/focus.py need tuning instead.",
         )
     return (
         INCONCLUSIVE,
@@ -110,6 +110,13 @@ def run(args) -> int:
     if driver.diagnostic:
         print(f"driver: {driver.diagnostic}")
 
+    if args.prelaunch_wait > 0:
+        # StS only detects controllers present at launch, so give the user time to (re)launch
+        # the game now that the virtual pad exists, then enter a combat.
+        print(f"pad is up. (Re)launch Slay the Spire and enter a combat now; "
+              f"waiting {args.prelaunch_wait}s...")
+        time.sleep(args.prelaunch_wait)
+
     observer = NullFocusObserver() if isinstance(driver, DryRunDriver) else ScreenFocusObserver(state_provider)
 
     hand_count = _resolve_hand_count(args, state_provider)
@@ -119,6 +126,24 @@ def run(args) -> int:
         return observer.observe(hand_count=hand_count).hand_index
 
     capture = getattr(state_provider, "capture", None)
+
+    frame_dir = None
+    if args.save_frames:
+        from pathlib import Path
+
+        frame_dir = Path(args.save_frames)
+        frame_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_frame(label: str) -> None:
+        if frame_dir is None or capture is None:
+            return
+        try:
+            import cv2
+
+            cv2.imwrite(str(frame_dir / f"{label}.png"), capture.grab())
+        except Exception:
+            log.debug("could not save frame", exc_info=True)
+
     if capture is not None:
         try:
             capture.focus_window()
@@ -129,6 +154,7 @@ def run(args) -> int:
     baseline = observe()
     print(f"baseline: hand_index={baseline}")
     observed.append(baseline)
+    save_frame("baseline")
 
     for step, token in enumerate(sequence, start=1):
         if capture is not None:
@@ -142,6 +168,7 @@ def run(args) -> int:
         idx = observe()
         observed.append(idx)
         print(f"step {step}: pressed {token} -> hand_index={idx}")
+        save_frame(f"step{step}_{token}_idx{idx}")
 
     if args.hold > 0:
         # Keep the virtual controller connected so a human can eyeball the lifted card;
@@ -171,6 +198,21 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=0.0,
         help="keep the controller connected this many seconds after the sequence (for eyeballing)",
+    )
+    parser.add_argument(
+        "--prelaunch-wait",
+        type=float,
+        default=0.0,
+        dest="prelaunch_wait",
+        help="create the pad, then wait this many seconds so you can (re)launch StS after it "
+        "exists (StS only detects controllers present at launch)",
+    )
+    parser.add_argument(
+        "--save-frames",
+        default=None,
+        dest="save_frames",
+        metavar="DIR",
+        help="write the captured frame at baseline and after each press into DIR (for tuning)",
     )
     parser.add_argument(
         "--dry-run",

@@ -2,8 +2,25 @@ from tspire.common import protocol
 from tspire.common.schema import Card, CombatState, GameState, Monster, PlayerCombat, ScreenType
 from tspire.host.config import HostConfig
 from tspire.host.input.driver import normalize_token
-from tspire.host.input.executor import GamepadCommandHandler
+from tspire.host.input.executor import GamepadCommandHandler, _hand_direction, _hand_steps
 from tspire.host.input.focus import FocusState
+
+
+def test_hand_direction_takes_shortest_wrapping_path():
+    # 5-card hand; cursor wraps, so direction is the shorter way around.
+    assert _hand_direction(0, 2, 5) == "right"
+    assert _hand_direction(2, 0, 5) == "left"
+    assert _hand_direction(0, 4, 5) == "left"  # wrap: 0 -> 4 is one step left
+    assert _hand_direction(4, 0, 5) == "right"  # wrap: 4 -> 0 is one step right
+    assert _hand_direction(3, 3, 5) == "right"  # already there (either is fine)
+
+
+def test_hand_steps_signed_shortest_count():
+    assert _hand_steps(0, 2, 5) == 2  # two steps right
+    assert _hand_steps(2, 0, 5) == -2  # two steps left
+    assert _hand_steps(0, 4, 5) == -1  # wrap: one step left
+    assert _hand_steps(4, 0, 5) == 1  # wrap: one step right
+    assert _hand_steps(3, 3, 5) == 0
 
 
 class FakeStateProvider:
@@ -136,11 +153,12 @@ def test_play_with_observed_target_succeeds_after_state_change():
     driver = FakeDriver()
     observer = FakeObserver(
         [
-            FocusState(hand_index=0),
-            FocusState(hand_index=1),
-            FocusState(target_index=0),
-            FocusState(target_index=1),
-            FocusState(target_index=1),
+            FocusState(hand_index=0),  # _wait_for_any_focus: cursor starts on card 0
+            FocusState(hand_index=0),  # loop sees 0, steps right toward target card 1
+            FocusState(hand_index=1),  # reached card 1
+            FocusState(target_index=0),  # targeting: cursor on monster 0
+            FocusState(target_index=1),  # after stepping right: on monster 1
+            FocusState(target_index=1),  # confirm
         ]
     )
     handler = GamepadCommandHandler(
@@ -151,7 +169,12 @@ def test_play_with_observed_target_succeeds_after_state_change():
     )
     ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["1", "1"]))
     assert ok and error is None
-    assert driver.presses == ["down", "left", "left", "left", "left", "right", "select", "right", "select"]
+    # Closed-loop navigation: exact press count varies, but the card and target are both
+    # selected, navigation starts by entering the hand, and the last action is a select.
+    assert driver.presses.count("select") == 2
+    assert driver.presses[0] == "down"
+    assert driver.presses[-1] == "select"
+    assert "right" in driver.presses
 
 
 def test_end_turn_requires_combat_state_change():

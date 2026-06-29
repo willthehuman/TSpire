@@ -75,6 +75,21 @@ class ScreenFocusObserver:
             return FocusState()
 
 
+# Gap-detection tunables (measured against real controller-mode frames). In StS controller
+# mode the focused card lifts OUT of the hand row to a preview position, leaving its bottom
+# slot nearly empty while every other slot still shows a card. So the focused slot is the one
+# whose hand-row band is empty. Deliberately module constants for easy calibration.
+_HAND_SLOT_HALF = 0.45  # per-slot column half-width as a fraction of slot width
+# Measure only the LOWER strip of the hand band. The lifted/focused card floats up to a
+# preview spot and can overlap the upper part of its own (or a neighbour's) slot, but it
+# clears the very bottom of the row -- so the genuine gap shows there even at the hand edges.
+_HAND_ROW_LOWER = 0.55  # start measuring this fraction of the way down the hand band
+_HAND_BRIGHT_V = 110  # a pixel counts as card content when its max channel exceeds this
+_HAND_GAP_MAX_PRESENCE = 0.20  # focused slot's bright fraction must be below this (near-empty)
+_HAND_GAP_RATIO = 0.5  # ...and at most this fraction of the next-emptiest slot's presence
+_HAND_MIN_CARD_PRESENCE = 0.20  # the other slots must actually hold cards (reject empty frames)
+
+
 def _focused_card_index(frame, boxes, regions=None, *, hand_count: int | None = None) -> int | None:
     if hand_count and hand_count > 0 and regions is not None:
         focused = _focused_card_index_by_slots(frame, regions, hand_count)
@@ -91,25 +106,50 @@ def _focused_card_index(frame, boxes, regions=None, *, hand_count: int | None = 
 
 
 def _focused_card_index_by_slots(frame, regions, hand_count: int) -> int | None:
+    """Pick the focused hand slot by which one is *missing* from the hand row.
+
+    The focused card lifts to a preview position, so its hand-row slot is nearly empty while
+    the others still hold cards. We measure card presence (bright fraction) per slot in the
+    hand band and return the clear gap, or None when no slot is distinctly empty.
+    """
     h, w = frame.shape[:2]
-    left, _, width, _ = regions.hand_search.to_pixels(w, h)
-    # The focused card lifts far above the normal hand band, so score from mid-screen
-    # through the bottom, centered on each expected hand slot.
+    left, top, width, height = regions.hand_search.to_pixels(w, h)
     slot_w = width / max(hand_count, 1)
-    y_top = round(0.56 * h)
-    y_bottom = h
-    scores: list[float] = []
+    band_top = top + round(height * _HAND_ROW_LOWER)
+    band_height = max(1, top + height - band_top)
+    presence: list[float] = []
     for i in range(hand_count):
         cx = left + (i + 0.5) * slot_w
         box = _SimpleBox(
-            left=round(cx - slot_w * 0.55),
-            top=y_top,
-            width=round(slot_w * 1.10),
-            height=y_bottom - y_top,
+            left=round(cx - slot_w * _HAND_SLOT_HALF),
+            top=band_top,
+            width=round(slot_w * 2 * _HAND_SLOT_HALF),
+            height=band_height,
         )
         crop = _crop(frame, _clamp_box(box, w, h))
-        scores.append(_cyan_score(crop))
-    return _winner(scores, min_score=0.060, min_margin=1.12)
+        presence.append(_slot_presence(crop))
+    return _gap_index(presence)
+
+
+def _slot_presence(crop) -> float:
+    """Fraction of bright (card) pixels in a hand slot; ~0 when the card has lifted away."""
+    if crop is None or getattr(crop, "size", 0) == 0:
+        return 0.0
+    return float((crop.max(axis=2) > _HAND_BRIGHT_V).mean())
+
+
+def _gap_index(presence: list[float]) -> int | None:
+    if len(presence) < 2:
+        return None
+    order = sorted(range(len(presence)), key=presence.__getitem__)
+    emptiest, runner_up = order[0], order[1]
+    if presence[runner_up] < _HAND_MIN_CARD_PRESENCE:
+        return None  # the other slots are empty too -> not a real hand (e.g. blank frame)
+    if presence[emptiest] >= _HAND_GAP_MAX_PRESENCE:
+        return None  # no slot is empty -> nothing focused (or detection failed)
+    if presence[emptiest] > presence[runner_up] * _HAND_GAP_RATIO:
+        return None  # gap not distinct enough
+    return emptiest
 
 
 def _focused_monster_index(frame, bars, *, target_count: int | None = None) -> int | None:

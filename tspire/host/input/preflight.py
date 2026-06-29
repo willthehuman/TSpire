@@ -41,6 +41,13 @@ def _window_warning(config, state_provider) -> str | None:
         return f"cannot check Slay the Spire window because {exc.name} is unavailable"
     except Exception as exc:
         return f"cannot check Slay the Spire window: {exc}"
+    if not config.input_dry_run:
+        # StS only detects controllers present at launch. If the game is already up when the
+        # host (and thus the virtual pad) starts, the pad is a hot-plug it may ignore.
+        return (
+            "Slay the Spire is already running; it only detects controllers present at "
+            "launch, so if input is ignored, start the host BEFORE launching the game"
+        )
     return None
 
 
