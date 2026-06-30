@@ -62,7 +62,7 @@ class WindowCapture:
 
         When the window successfully becomes foreground, a safe-zone click is sent
         to force Windows to fully transfer input ownership. Without a real input
-        event, Unity games (StS included) may ignore virtual gamepad input even
+        event, libGDX games (StS included) may ignore virtual gamepad input even
         though GetForegroundWindow() returns the game's hwnd.
         """
         try:
@@ -70,6 +70,9 @@ class WindowCapture:
         except Exception:
             return False
         if self.is_foreground(w) and not getattr(w, "isMinimized", False):
+            hwnd = getattr(w, "_hWnd", None)
+            if hwnd:
+                self._click_safe_zone(hwnd)
             return True
         self._activate(w)
         if not self.is_foreground(w):
@@ -131,7 +134,7 @@ class WindowCapture:
         """Send a real left-click to a non-interactive corner of the window.
 
         Windows only fully transfers input focus when the target window receives a
-        real input event.  Unity games (StS included) may ignore virtual gamepad
+        real input event.  libGDX games (StS included) may ignore virtual gamepad
         input until this happens, even when GetForegroundWindow() returns their
         hwnd.
 

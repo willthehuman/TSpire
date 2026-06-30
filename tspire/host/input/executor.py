@@ -104,14 +104,18 @@ class GamepadCommandHandler:
             self._press("cancel")
             return True, None
         if command.verb == protocol.Verb.END:
-            ok, error = self._end_turn()
-            if ok:
-                self._note_action(command, state_hint)
+            before = self._require_combat(state_hint)
+            self._note_action(command, before)
+            ok, error = self._end_turn(before)
+            if not ok:
+                self._clear_pending_action()
             return ok, error
         if command.verb == protocol.Verb.PLAY:
-            ok, error = self._play(command.args, state_hint)
-            if ok:
-                self._note_action(command, state_hint)
+            before = self._require_combat(state_hint)
+            self._note_action(command, before)
+            ok, error = self._play(command.args, before)
+            if not ok:
+                self._clear_pending_action()
             return ok, error
         return False, f"unsupported command {command.verb!r}"
 
@@ -126,6 +130,15 @@ class GamepadCommandHandler:
         except Exception:
             log.debug("note_action failed", exc_info=True)
 
+    def _clear_pending_action(self) -> None:
+        clear = getattr(self.state_provider, "clear_pending_action", None)
+        if clear is None:
+            return
+        try:
+            clear()
+        except Exception:
+            log.debug("clear_pending_action failed", exc_info=True)
+
     def _raw(self, args: list[str]) -> tuple[bool, str | None]:
         if not self.config.input_raw_enabled:
             return False, "raw input is disabled; set TSPIRE_INPUT_RAW=1 to enable it"
@@ -136,8 +149,7 @@ class GamepadCommandHandler:
             self._press(token)
         return True, None
 
-    def _end_turn(self) -> tuple[bool, str | None]:
-        before = self._require_combat()
+    def _end_turn(self, before: GameState) -> tuple[bool, str | None]:
         before_sig = _state_signature(before)
         self._press("proceed")
         if not self._wait_for_change(before_sig):
@@ -147,9 +159,8 @@ class GamepadCommandHandler:
     def _play(
         self,
         args: list[str],
-        state_hint: GameState | None = None,
+        before: GameState,
     ) -> tuple[bool, str | None]:
-        before = self._require_combat(state_hint)
         combat = before.combat_state
         assert combat is not None  # for type checkers; _require_combat guarantees it.
         card_index = _int_arg(args, 0, "card")
@@ -159,6 +170,7 @@ class GamepadCommandHandler:
         if target_index is not None and not _has_monster_index(combat.monsters, target_index):
             return False, f"target index {target_index} is out of range"
 
+        before_sig = _state_signature(before)
         if not self._focus_hand_card(card_index, len(combat.hand)):
             return False, f"could not verify focus on hand card {card_index}"
         self._press("select")
@@ -168,17 +180,23 @@ class GamepadCommandHandler:
                 self._press("cancel")
                 return False, f"could not verify focus on target {target_index}"
             self._press("select")
+            if not self._wait_for_change(before_sig):
+                return False, "play input sent, but no combat state change was observed"
             return True, None
 
         if self._target_focus_appeared(len(combat.monsters)):
             self._press("cancel")
             return False, "card did not resolve; provide a target index if it requires one"
+        if not self._wait_for_change(before_sig):
+            return False, "play input sent, but no combat state change was observed"
         return True, None
 
     def _require_combat(self, state_hint: GameState | None = None) -> GameState:
-        state = state_hint if _is_combat_state(state_hint) else self._read_state()
+        state = state_hint if _is_fresh_combat_state(state_hint) else self._read_state()
         if state.screen_type != ScreenType.COMBAT or state.combat_state is None:
             raise CommandError(f"combat input is only available on COMBAT, got {state.screen_type.value}")
+        if state.read_status != "fresh":
+            raise CommandError(f"fresh combat state is required, got {state.read_status}")
         return state
 
     def _read_state(self) -> GameState:
@@ -204,9 +222,11 @@ class GamepadCommandHandler:
         # unconfirmable edge as the deterministic destination. Self-corrects from any
         # confirmed position if a press is dropped.
         self._press("down")  # ensure the cursor is in the hand
+        if target == 0 and self._focus_first_hand_card(hand_count):
+            return True
         anchor = self._establish_anchor(hand_count)
         if anchor is None:
-            return False
+            return self._focus_hand_card_unverified(target, hand_count)
         for _ in range(4):
             current = self._observe().hand_index
             if current == target:
@@ -223,6 +243,12 @@ class GamepadCommandHandler:
                 return True
             if check is None and target in (0, hand_count - 1):
                 return True  # edge card: not CV-confirmable, but the step count is exact
+            if target in (0, hand_count - 1) and check != target:
+                log.warning(
+                    "hand focus observer did not confirm edge card %s after deterministic steps",
+                    target,
+                )
+                return True
         return False
 
     def _establish_anchor(self, hand_count: int) -> int | None:
@@ -261,15 +287,67 @@ class GamepadCommandHandler:
             for _ in range(len(monsters) + 2):
                 self._press("left")
             if not self._wait_for_focus(target_index=0):
-                return False
+                return self._focus_target_unverified(target, len(monsters))
             focused = 0
 
         direction = "right" if target > focused else "left"
         for expected in _range_exclusive(focused, target):
             self._press(direction)
             if not self._wait_for_focus(target_index=expected):
-                return False
-        return self._observe().target_index == target
+                return self._focus_target_unverified(target, len(monsters))
+        if self._observe().target_index == target:
+            return True
+        return self._focus_target_unverified(target, len(monsters))
+
+    def _focus_hand_card_unverified(self, target: int, hand_count: int) -> bool:
+        """Fallback when the visual hand-focus observer cannot find an anchor.
+
+        In controller mode, moving down from the battlefield commonly lands on the leftmost
+        hand card, which is also the edge card our observer is worst at seeing. Use this only
+        for card 0; other targets need a confirmed anchor because the hand cursor wraps.
+        """
+        if target != 0 or hand_count <= 0:
+            return False
+        log.warning("hand focus observer could not anchor; assuming hand card 0 after down")
+        return True
+
+    def _focus_first_hand_card(self, hand_count: int) -> bool:
+        """Best-effort reset to the first hand card for edge-card plays.
+
+        The hand cursor wraps, so repeated left/right cannot create a stable left edge.
+        Leaving the hand and pressing down re-enters it at the leftmost card in controller
+        mode. The observer often cannot confirm card 0, so accept the deterministic entry
+        even when the follow-up read is missing or stale.
+        """
+        if hand_count <= 0:
+            return False
+        self._press("up")
+        self._sleep(self.timing.settle_seconds)
+        self._press("down")
+        self._sleep(self.timing.settle_seconds)
+        focus = self._observe().hand_index
+        if focus == 0 or focus is None:
+            return True
+        log.warning("hand focus observer reported %s after first-card reset; trusting controller reset", focus)
+        return True
+
+    def _focus_target_unverified(self, target: int, target_count: int) -> bool:
+        """Fallback after a left sweep when target-focus detection cannot confirm.
+
+        Enemy targeting does not have the edge-card gap problem, but the glow detector can
+        still miss on dark scenes. The existing left sweep is intended to land on target 0;
+        from there, step right deterministically to the requested target.
+        """
+        if target < 0 or target >= target_count:
+            return False
+        log.warning("target focus observer could not confirm; using deterministic target steps")
+        for _ in range(target_count + 2):
+            self._press("left")
+            self._sleep(self.timing.settle_seconds)
+        for _ in range(target):
+            self._press("right")
+            self._sleep(self.timing.settle_seconds)
+        return True
 
     def _wait_for_focus(
         self,
@@ -382,6 +460,10 @@ def _is_combat_state(state: GameState | None) -> bool:
     return state is not None and state.screen_type == ScreenType.COMBAT and state.combat_state is not None
 
 
+def _is_fresh_combat_state(state: GameState | None) -> bool:
+    return _is_combat_state(state) and state.read_status == "fresh"
+
+
 def _hand_steps(current: int, target: int, hand_count: int) -> int:
     """Signed shortest step count around the wrapping hand cursor (+right / -left)."""
     right_steps = (target - current) % hand_count
@@ -401,4 +483,15 @@ def _range_exclusive(start: int, stop: int):
 
 
 def _state_signature(state: GameState) -> str:
-    return json.dumps(state.to_dict(), sort_keys=True, separators=(",", ":"))
+    data = state.to_dict()
+    for key in (
+        "available_commands",
+        "parse_confidence",
+        "read_status",
+        "screen_message",
+        "state_notes",
+        "state_seq",
+        "unknown_fields",
+    ):
+        data.pop(key, None)
+    return json.dumps(data, sort_keys=True, separators=(",", ":"))

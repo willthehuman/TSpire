@@ -44,7 +44,7 @@ class HostConfig:
     vision_mode: str = "llm"
     # Ollama connection + model for vision_mode == "llm".
     ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "gemma4:e4b-it-qat"
+    ollama_model: str = "gemma4:31b-cloud"
     # Width the full frame is downscaled to before sending to the model (px).
     llm_image_width: int = 1024
 

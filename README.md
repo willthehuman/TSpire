@@ -10,7 +10,7 @@ every decision; the host is just "eyes + hands".
 
 Screen reading has two modes (config `vision_mode`):
 
-- **`llm`** (default) — a local **Ollama** vision model (e.g. `gemma4:e4b-it-qat`) reads the
+- **`llm`** (default) — a local **Ollama** vision model (`gemma4:31b-cloud`) reads the
   busy combat scene (all enemies + the overlapping hand) robustly. Fixed numbers
   (energy/HP/block) are read from upscaled region crops, one per call (this model loses
   accuracy with multiple images per call). ~15–20s per combat read; runs only during combat
@@ -29,7 +29,7 @@ Milestone-based build (see `~/.claude/plans/this-is-an-empty-binary-spark.md`):
 - **M0 Scaffold** — schema, config, capture, WebSocket host↔client loop. ✓
 - **M1 State read** — combat classifier + dual parser (local LLM vision / OpenCV), region
   calibration overlay. ✓ *Validated end-to-end on a real combat screenshot with
-  `gemma4:e4b-it-qat`: both enemies, full hand (names+costs), HP/energy/block all correct.*
+  `gemma4:31b-cloud`: both enemies, full hand (names+costs), HP/energy/block all correct.*
 - **M2 Client render** — Textual combat dashboard (top bar, enemies+intents, player, hand),
   friendly command parser, keybindings, reconnecting WebSocket client. ✓
 - **M3** — gamepad input executor with closed-loop combat focus navigation. ✓

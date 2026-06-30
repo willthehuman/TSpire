@@ -123,6 +123,17 @@ def test_play_attack_reduces_target_hp_and_spends_energy():
     assert state.combat_state.discard_pile_count == 1
 
 
+def test_play_attack_consumes_monster_block_before_hp():
+    before = _combat(
+        energy=3,
+        monsters=[Monster(current_hp=20, max_hp=20, block=4, index=0)],
+        hand=[Card(name="Strike", cost=1, index=0)],
+    )
+    monster = predict(before, _play(0, 0)).combat_state.monsters[0]
+    assert monster.block == 0
+    assert monster.current_hp == 18
+
+
 def test_play_attack_adds_strength_and_vulnerable():
     before = _combat(
         player_powers=[Power(power_id="Strength", name="Strength", amount=3)],

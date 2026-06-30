@@ -53,6 +53,16 @@ def _hp_text(current: int, maximum: int) -> Text:
     return Text(f"{current}/{maximum}", style=style)
 
 
+def _unknown(state: GameState, field: str) -> bool:
+    return field in state.unknown_fields
+
+
+def _stat_text(state: GameState, field: str, value: int, style: str) -> Text:
+    if _unknown(state, field):
+        return Text("?", style="dim")
+    return Text(str(value), style=style)
+
+
 def _top_bar(state: GameState) -> Panel:
     cs = state.combat_state
     player_hp = _hp_text(state.current_hp, state.max_hp)
@@ -60,23 +70,29 @@ def _top_bar(state: GameState) -> Panel:
     t.add_column(style="dim")
     t.add_column()
     t.add_row("HP", player_hp)
-    t.add_row("Gold", Text(str(state.gold), style="yellow"))
+    t.add_row("Gold", _stat_text(state, "gold", state.gold, "yellow"))
     if cs is not None:
-        t.add_row("Deck", Text(str(state.deck_count), style="cyan") if state.deck_count else Text("?", style="dim"))
+        t.add_row("Deck", _stat_text(state, "deck_count", state.deck_count, "cyan"))
     if cs is not None:
         energy = cs.player.energy
         t.add_row("Energy", Text(str(energy), style="bold cyan"))
         if cs.player.block:
             t.add_row("Block", Text(str(cs.player.block), style="bold blue"))
-        t.add_row("Piles", Text(f"draw {cs.draw_pile_count}  discard {cs.discard_pile_count}", style="dim"))
+        draw = "?" if _unknown(state, "draw_pile_count") else str(cs.draw_pile_count)
+        discard = "?" if _unknown(state, "discard_pile_count") else str(cs.discard_pile_count)
+        t.add_row("Piles", Text(f"draw {draw}  discard {discard}", style="dim"))
+    floor = "?" if _unknown(state, "floor") or state.floor <= 0 else str(state.floor)
+    act = "?" if _unknown(state, "floor") or state.act <= 0 else str(state.act)
     meta = Text.assemble(
-        ("FLOOR ", "dim"), (str(state.floor) or "?", "bold"),
-        ("   ACT ", "dim"), (str(state.act) or "?", "bold"),
+        ("FLOOR ", "dim"), (floor, "bold"),
+        ("   ACT ", "dim"), (act, "bold"),
         ("   ", ""),
         (f"[{state.screen_type.value}]", "bold yellow"),
     )
     if state.parse_confidence and state.parse_confidence < 0.9:
         meta.append(f"   conf {state.parse_confidence:.0%}", style="dim red")
+    if state.read_status != "fresh":
+        meta.append(f"   {state.read_status}", style="bold yellow")
     return Panel(Group(t, Text(""), meta), title="Slay the Spire", border_style="blue")
 
 
@@ -88,8 +104,12 @@ def _enemies(state: GameState) -> Panel:
     t.add_column()                        # hp
     t.add_column()                        # block
     t.add_column()                        # intent
-    if cs is None or not cs.monsters:
-        t.add_row("", Text("(no enemies — not in combat)", style="dim"))
+    if cs is None:
+        t.add_row("", Text("(no combat data)", style="dim"))
+    elif not cs.monsters:
+        message = "(enemies not read)" if state.screen_type.value == "COMBAT" else "(no enemies - not in combat)"
+        style = "dim yellow" if state.screen_type.value == "COMBAT" else "dim"
+        t.add_row("", Text(message, style=style))
     else:
         for m in cs.monsters:
             name = m.name or f"enemy"
@@ -162,10 +182,11 @@ def _potions(state: GameState) -> Panel | None:
 
 def combat_panel(state: GameState):
     """Compose the full combat dashboard. Returns a Rich renderable (never raises)."""
+    messages = []
     if state.screen_message:
-        banner = Text(state.screen_message, style="yellow")
-    else:
-        banner = Text("")
+        messages.append(state.screen_message)
+    messages.extend(state.state_notes)
+    banner = Text(" | ".join(messages), style="yellow") if messages else Text("")
 
     enemies = _enemies(state)
     player = _player(state)
@@ -203,12 +224,14 @@ def render_state(state: GameState):
     info.add_column()
     info.add_row("Screen", Text(state.screen_type.value, style="bold yellow"))
     info.add_row("HP", _hp_text(state.current_hp, state.max_hp))
-    info.add_row("Gold", Text(str(state.gold), style="yellow"))
+    info.add_row("Gold", _stat_text(state, "gold", state.gold, "yellow"))
     if state.deck_count:
-        info.add_row("Deck", Text(str(state.deck_count), style="cyan"))
+        info.add_row("Deck", _stat_text(state, "deck_count", state.deck_count, "cyan"))
     info.add_row("Commands", Text(cmds, style="cyan"))
     body = [Panel(info, title="Slay the Spire", border_style="blue")]
     if state.screen_message:
         body.append(Text(state.screen_message, style="yellow"))
+    if state.state_notes:
+        body.append(Text(" | ".join(state.state_notes), style="yellow"))
     body.append(Text("Type a command below. '?' for help.", style="dim"))
     return Group(*body)

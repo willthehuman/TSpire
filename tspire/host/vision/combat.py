@@ -11,7 +11,7 @@ rather than raising, and an overall confidence score reflects how much was read 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tspire.common.schema import Card, CombatState, Intent, Monster, PlayerCombat
 from tspire.host.vision.backend import BBox, VisionBackend
@@ -48,34 +48,57 @@ class ParseResult:
     gold: int = 0
     floor: int = 0
     deck_count: int = 0
+    observed: dict[str, bool] = field(default_factory=dict)
 
 
 def parse_combat(frame, regions: RegionMap, backend: VisionBackend) -> ParseResult:
     h, w = frame.shape[:2]
     signals: list[bool] = []
 
-    player = _parse_player(frame, regions, backend, signals)
+    player, observed = _parse_player(frame, regions, backend, signals)
     monsters = _parse_monsters(frame, regions, backend, w, h, signals)
     hand = _parse_hand(frame, regions, backend, w, h, signals)
+    signals.append(bool(monsters))
+    signals.append(bool(hand))
+
+    draw = backend.ocr_int(frame, regions.draw_pile, default=-1)
+    discard = backend.ocr_int(frame, regions.discard_pile, default=-1)
+    gold = backend.ocr_int(frame, regions.gold, default=-1)
+    floor = backend.ocr_int(frame, regions.floor, default=-1)
+    deck_count = backend.ocr_int(frame, regions.deck_count, default=-1)
+    observed.update(
+        {
+            "draw_pile_count": draw >= 0,
+            "discard_pile_count": discard >= 0,
+            "gold": gold >= 0,
+            "floor": floor > 0,
+            "deck_count": deck_count > 0,
+            "monsters": bool(monsters),
+            "hand": bool(hand),
+        }
+    )
 
     combat = CombatState(
         player=player,
         monsters=monsters,
         hand=hand,
-        draw_pile_count=backend.ocr_int(frame, regions.draw_pile),
-        discard_pile_count=backend.ocr_int(frame, regions.discard_pile),
+        draw_pile_count=max(0, draw),
+        discard_pile_count=max(0, discard),
     )
     confidence = (sum(signals) / len(signals)) if signals else 0.0
     return ParseResult(
         combat=combat,
         confidence=confidence,
-        gold=backend.ocr_int(frame, regions.gold),
-        floor=backend.ocr_int(frame, regions.floor),
-        deck_count=backend.ocr_int(frame, regions.deck_count),
+        gold=max(0, gold),
+        floor=max(0, floor),
+        deck_count=max(0, deck_count),
+        observed=observed,
     )
 
 
-def _parse_player(frame, regions: RegionMap, backend: VisionBackend, signals: list[bool]) -> PlayerCombat:
+def _parse_player(
+    frame, regions: RegionMap, backend: VisionBackend, signals: list[bool]
+) -> tuple[PlayerCombat, dict[str, bool]]:
     hp, hp_max = backend.ocr_int_pair(frame, regions.player_hp)
     if hp_max <= 0:
         hp, hp_max = backend.ocr_int_pair(frame, regions.top_hp)
@@ -85,8 +108,14 @@ def _parse_player(frame, regions: RegionMap, backend: VisionBackend, signals: li
         block = backend.ocr_int(frame, regions.player_block)
     signals.append(hp_max > 0)
     signals.append(energy_max > 0 or energy > 0)
-    return PlayerCombat(
-        current_hp=hp, max_hp=hp_max, block=block, energy=energy
+    return (
+        PlayerCombat(current_hp=hp, max_hp=hp_max, block=block, energy=energy),
+        {
+            "current_hp": hp_max > 0 or hp > 0,
+            "max_hp": hp_max > 0,
+            "energy": energy_max > 0 or energy > 0,
+            "block": True,
+        },
     )
 
 

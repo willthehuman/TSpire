@@ -75,6 +75,21 @@ def test_ensure_foreground_early_out():
     assert not activate_called
 
 
+def test_ensure_foreground_clicks_safe_zone_when_already_foreground():
+    cap = WindowCapture("Slay the Spire")
+    win = _Window("Slay the Spire", width=1920, height=1080)
+    win._hWnd = 123
+    clicked = []
+
+    cap._find_window = lambda: win
+    cap.is_foreground = lambda w: True
+    cap._activate = lambda w: False
+    cap._click_safe_zone = clicked.append
+
+    assert cap.ensure_foreground() is True
+    assert clicked == [123]
+
+
 def test_normalize_image_frame_crops_framed_screenshot():
     frame = np.zeros((1107, 1922, 3), dtype=np.uint8)
     frame[27, 1] = (1, 2, 3)

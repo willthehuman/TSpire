@@ -151,7 +151,7 @@ def test_play_without_target_detects_target_mode_and_cancels():
     assert driver.presses[-1] == "cancel"
 
 
-def test_play_with_observed_target_succeeds_without_waiting_for_state_change():
+def test_play_with_observed_target_succeeds_after_state_change():
     before = _combat(hand=2, monsters=2, energy=3)
     after = _combat(hand=1, monsters=2, energy=2)
     driver = FakeDriver()
@@ -167,11 +167,11 @@ def test_play_with_observed_target_succeeds_without_waiting_for_state_change():
     )
     handler = GamepadCommandHandler(
         _cfg(),
-        FakeStateProvider([before, before, after]),
+        FakeStateProvider([after]),
         driver=driver,
         observer=observer,
     )
-    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["1", "1"]))
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["1", "1"]), state_hint=before)
     assert ok and error is None
     # Closed-loop navigation: exact press count varies, but the card and target are both
     # selected, navigation starts by entering the hand, and the last action is a select.
@@ -183,7 +183,7 @@ def test_play_with_observed_target_succeeds_without_waiting_for_state_change():
 
 def test_play_uses_cached_state_hint_without_full_state_read():
     state = _combat(hand=2, monsters=1)
-    provider = FakeStateProvider([GameState(screen_type=ScreenType.MAP)])
+    provider = FakeStateProvider([_combat(hand=1, monsters=1)])
     driver = FakeDriver()
     observer = FakeObserver([FocusState(hand_index=0), FocusState(hand_index=0)])
     handler = GamepadCommandHandler(
@@ -196,8 +196,92 @@ def test_play_uses_cached_state_hint_without_full_state_read():
     ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["0", "0"]), state_hint=state)
 
     assert ok and error is None
-    assert provider.reads == 0
-    assert driver.presses == ["down", "select", "select"]
+    assert provider.reads == 1
+    assert driver.presses == ["down", "up", "down", "select", "select"]
+
+
+def test_play_card_zero_falls_back_when_focus_observer_cannot_anchor():
+    state = _combat(hand=2, monsters=2)
+    driver = FakeDriver()
+    handler = GamepadCommandHandler(
+        _cfg(),
+        FakeStateProvider([_combat(hand=1, monsters=2)]),
+        driver=driver,
+        observer=FakeObserver([FocusState()] * 20),
+    )
+
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["0", "0"]), state_hint=state)
+
+    assert ok and error is None
+    assert driver.presses[0] == "down"
+    assert driver.presses.count("select") == 2
+
+
+def test_play_card_zero_uses_first_card_reset_when_observer_is_stale():
+    state = _combat(hand=4, monsters=2)
+    driver = FakeDriver()
+    observer = FakeObserver(
+        [
+            FocusState(hand_index=2),  # stale or wrong read after reset
+            FocusState(target_index=0),
+        ]
+    )
+    handler = GamepadCommandHandler(
+        _cfg(),
+        FakeStateProvider([_combat(hand=3, monsters=2)]),
+        driver=driver,
+        observer=observer,
+    )
+
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["0", "0"]), state_hint=state)
+
+    assert ok and error is None
+    assert driver.presses[:3] == ["down", "up", "down"]
+    assert driver.presses.count("select") == 2
+
+
+def test_play_target_zero_falls_back_when_confirmation_fails():
+    state = _combat(hand=2, monsters=2)
+    driver = FakeDriver()
+    observer = FakeObserver(
+        [
+            FocusState(hand_index=0),
+            FocusState(hand_index=0),
+            FocusState(target_index=1),
+            FocusState(),
+            FocusState(),
+            FocusState(),
+        ]
+    )
+    handler = GamepadCommandHandler(
+        _cfg(),
+        FakeStateProvider([_combat(hand=1, monsters=2)]),
+        driver=driver,
+        observer=observer,
+    )
+
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["0", "0"]), state_hint=state)
+
+    assert ok and error is None
+    assert driver.presses.count("select") == 2
+    assert driver.presses[-1] == "select"
+
+
+def test_play_reports_failure_when_inputs_do_not_change_combat_state():
+    state = _combat(hand=2, monsters=1)
+    driver = FakeDriver()
+    handler = GamepadCommandHandler(
+        _cfg(),
+        FakeStateProvider([state, state]),
+        driver=driver,
+        observer=FakeObserver([FocusState(hand_index=0), FocusState(target_index=0)]),
+    )
+
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["0", "0"]), state_hint=state)
+
+    assert not ok
+    assert "no combat state change" in error
+    assert driver.presses.count("select") == 2
 
 
 def test_input_aborts_when_foregrounding_fails():
@@ -242,6 +326,15 @@ def test_combat_input_rejects_non_combat_screen():
     ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["0"]))
     assert not ok
     assert "only available on COMBAT" in error
+
+
+def test_combat_input_rejects_stale_combat_state():
+    state = _combat()
+    state.read_status = "stale"
+    handler = GamepadCommandHandler(_cfg(input_dry_run=True), FakeStateProvider([state]))
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["0"]))
+    assert not ok
+    assert "fresh combat state" in error
 
 
 def test_build_session_wires_gamepad_handler():

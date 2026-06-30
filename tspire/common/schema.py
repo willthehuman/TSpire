@@ -184,6 +184,10 @@ class GameState:
     available_commands: list[str] = field(default_factory=list)
     screen_message: str = ""  # e.g. "screen not yet supported", event text
     parse_confidence: float = 0.0
+    state_seq: int = 0
+    read_status: str = "fresh"  # fresh | stale | uncertain
+    state_notes: list[str] = field(default_factory=list)
+    unknown_fields: list[str] = field(default_factory=list)
 
     # ---- serialization -------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:

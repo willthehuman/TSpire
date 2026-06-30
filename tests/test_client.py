@@ -12,7 +12,7 @@ from rich.console import Console  # noqa: E402
 from tspire.client.commands import parse_line  # noqa: E402
 from tspire.client.views import combat_panel, intent_label, render_state  # noqa: E402
 from tspire.common import protocol  # noqa: E402
-from tspire.common.schema import GameState, Intent  # noqa: E402
+from tspire.common.schema import CombatState, GameState, Intent, ScreenType  # noqa: E402
 
 import tests.test_schema as ts  # reuse _sample_state  # noqa: E402
 
@@ -109,6 +109,35 @@ def test_intent_attack_shows_damage_and_total():
 
 def test_intent_non_attack_has_no_damage():
     assert "12" not in intent_label(Intent.BUFF, 0).plain
+
+
+def test_empty_enemy_panel_does_not_claim_combat_is_noncombat():
+    state = GameState(
+        screen_type=ScreenType.COMBAT,
+        in_combat=True,
+        combat_state=CombatState(),
+        read_status="uncertain",
+    )
+    out = _render(state)
+    assert "enemies not read" in out
+    assert "not in combat" not in out
+
+
+def test_unknown_run_stats_render_as_question_marks():
+    state = ts._sample_state()
+    state.gold = 0
+    state.floor = 0
+    state.act = 0
+    state.deck_count = 0
+    state.combat_state.draw_pile_count = 0
+    state.unknown_fields = ["gold", "floor", "deck_count", "draw_pile_count"]
+
+    out = _render(state)
+
+    assert "Gold    ?" in out
+    assert "Deck    ?" in out
+    assert "draw ?" in out
+    assert "FLOOR ?   ACT ?" in out
 
 
 def test_render_state_non_combat():

@@ -25,8 +25,7 @@ from tspire.common.schema import GameState, ScreenType
 from tspire.host.capture import WindowCapture, WindowNotFoundError, normalize_frame_to_client
 from tspire.host.config import HostConfig
 from tspire.host.game_assets import find_game_jar
-from tspire.host.predict import predict
-from tspire.host.reconcile import reconcile
+from tspire.host.state_tracker import StateTracker
 from tspire.host.vision import region_map_for
 
 log = logging.getLogger("tspire.host.state")
@@ -48,14 +47,17 @@ class ScreenStateProvider:
         # (command, before_state) recorded by the input executor after a play/end-turn, so
         # the next read can predict-and-reconcile against it. One-shot: cleared once consumed.
         self._pending: tuple[protocol.Command, GameState] | None = None
+        self._tracker = StateTracker(config)
 
     def note_action(self, command: protocol.Command, before_state: GameState | None) -> None:
         """Record a state-altering combat command so the next read can reconcile against a
         rule-based prediction. No-op unless the prior state was combat (nothing to predict)."""
-        if before_state is None or before_state.screen_type != ScreenType.COMBAT:
-            self._pending = None
-            return
-        self._pending = (command, before_state)
+        self._state_tracker().note_action(command, before_state)
+        self._sync_legacy_state()
+
+    def clear_pending_action(self) -> None:
+        self._state_tracker().clear_pending()
+        self._sync_legacy_state()
 
     def _get_backend(self):
         if self._backend is None:
@@ -74,6 +76,11 @@ class ScreenStateProvider:
         if self._llm is None:
             from tspire.host.vision.llm import OllamaVisionParser
 
+            log.info(
+                "Ollama vision parser using model %s at %s",
+                self.config.ollama_model,
+                self.config.ollama_url,
+            )
             self._llm = OllamaVisionParser(
                 model=self.config.ollama_model,
                 url=self.config.ollama_url,
@@ -86,11 +93,11 @@ class ScreenStateProvider:
         try:
             frame = self.capture.grab()
         except WindowNotFoundError:
-            return GameState(
+            return self._remember(self._state_tracker().reduce_noncombat(GameState(
                 screen_type=ScreenType.NONE,
                 screen_message=f"game window {self.config.window_title!r} not found",
                 available_commands=protocol.commands_for_screen(ScreenType.NONE.value),
-            )
+            )))
         frame = normalize_frame_to_client(
             frame,
             int(self.config.width),
@@ -103,13 +110,13 @@ class ScreenStateProvider:
         backend = self._get_backend()
         screen = classify_screen(frame, self.regions, backend)
         if screen == ScreenType.COMBAT:
-            return self._remember(self._build_combat_state(frame, backend))
+            return self._build_combat_state(frame, backend)
 
-        return self._remember(GameState(
+        return self._remember(self._state_tracker().reduce_noncombat(GameState(
             screen_type=screen,
             screen_message="screen not yet supported by parser (v1 = combat only)",
             available_commands=protocol.commands_for_screen(screen.value),
-        ))
+        )))
 
     def _build_combat_state(self, frame, backend) -> GameState:
         if self.config.vision_mode == "llm":
@@ -122,45 +129,21 @@ class ScreenStateProvider:
             result = parse_combat(frame, self.regions, backend)
 
         player = result.combat.player
-        previous = self._last_state
-        gold = _prefer_read_value(result.gold, previous.gold if previous else 0)
-        floor = _prefer_read_value(result.floor, previous.floor if previous else 0)
-        deck_count = _prefer_read_value(result.deck_count, previous.deck_count if previous else 0)
-        current_hp = _prefer_read_value(player.current_hp, previous.current_hp if previous else 0)
-        max_hp = _prefer_read_value(player.max_hp, previous.max_hp if previous else 0)
-        if current_hp:
-            player.current_hp = current_hp
-        if max_hp:
-            player.max_hp = max_hp
         state = GameState(
             screen_type=ScreenType.COMBAT,
             in_combat=True,
-            floor=floor,
-            act=_act_for_floor(floor),
-            current_hp=current_hp,
-            max_hp=max_hp,
-            gold=gold,
-            deck_count=deck_count,
+            floor=result.floor,
+            act=_act_for_floor(result.floor),
+            current_hp=player.current_hp,
+            max_hp=player.max_hp,
+            gold=result.gold,
+            deck_count=result.deck_count,
             combat_state=result.combat,
             available_commands=protocol.commands_for_screen(ScreenType.COMBAT.value),
             parse_confidence=round(result.confidence, 2),
         )
-        return self._reconcile_with_prediction(state, frame)
-
-    def _reconcile_with_prediction(self, state: GameState, frame) -> GameState:
-        """Correct implausible combat reads against a rule-based prediction of the action
-        that was just executed. The pending action is one-shot (cleared whether or not it
-        applied) so it never affects more than the first read after the command."""
-        pending = self._pending
-        self._pending = None
-        if not self.config.predict_enabled or pending is None:
-            return state
-        command, before = pending
-        predicted = predict(before, command)
-        if predicted is None:
-            return state
         arbiter = self._arbiter(frame) if self.config.predict_arbiter else None
-        return reconcile(state, predicted, before, arbiter)
+        return self._remember(self._state_tracker().reduce_combat(state, result, arbiter))
 
     def _arbiter(self, frame):
         """Bind the LLM re-read calls to the current frame for the reconciler. Returns None
@@ -174,7 +157,31 @@ class ScreenStateProvider:
 
     def _remember(self, state: GameState) -> GameState:
         self._last_state = state
+        self._sync_legacy_state()
         return state
+
+    def _state_tracker(self) -> StateTracker:
+        tracker = getattr(self, "_tracker", None)
+        if tracker is None:
+            tracker = StateTracker(self.config)
+            if self._last_state is not None:
+                tracker.last_state = self._last_state
+                if (
+                    self._last_state.screen_type == ScreenType.COMBAT
+                    and self._last_state.combat_state is not None
+                    and self._last_state.read_status == "fresh"
+                ):
+                    tracker.accepted_state = self._last_state
+            self._tracker = tracker
+        return tracker
+
+    def _sync_legacy_state(self) -> None:
+        tracker = self._state_tracker()
+        self._pending = (
+            (tracker.pending.command, tracker.pending.before)
+            if tracker.pending is not None
+            else None
+        )
 
 
 class _LlmArbiter:
@@ -197,11 +204,7 @@ class _LlmArbiter:
         except Exception:
             log.debug("arbiter re-read failed", exc_info=True)
             return None
-        return (current, maximum) if current > 0 else None
-
-
-def _prefer_read_value(value: int, fallback: int) -> int:
-    return value if value > 0 else fallback
+        return (current, maximum) if maximum > 0 or current > 0 else None
 
 
 def _act_for_floor(floor: int) -> int:

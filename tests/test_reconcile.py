@@ -87,6 +87,56 @@ def test_monster_hp_plausible_decrease_is_kept():
     assert out.combat_state.monsters[0].current_hp == 15
 
 
+def test_monster_reconcile_matches_by_identity_not_vision_index():
+    before = _state(
+        monsters=[
+            Monster(name="A", current_hp=20, max_hp=20, index=0),
+            Monster(name="B", current_hp=30, max_hp=30, index=1),
+        ]
+    )
+    predicted = _state(
+        monsters=[
+            Monster(name="A", current_hp=14, max_hp=20, index=0),
+            Monster(name="B", current_hp=30, max_hp=30, index=1),
+        ]
+    )
+    # Vision returned display order reversed and dropped a digit on A. B must not inherit
+    # A's predicted HP just because it arrived at index 0.
+    vision = _state(
+        monsters=[
+            Monster(name="B", current_hp=30, max_hp=30, index=0),
+            Monster(name="A", current_hp=4, max_hp=20, index=1),
+        ]
+    )
+
+    out = reconcile(vision, predicted, before)
+
+    assert [(m.name, m.current_hp) for m in out.combat_state.monsters] == [("B", 30), ("A", 14)]
+
+
+def test_reconcile_carries_predicted_live_monster_missing_from_vision():
+    before = _state(
+        monsters=[
+            Monster(name="A", current_hp=20, max_hp=20, index=0),
+            Monster(name="B", current_hp=30, max_hp=30, index=1),
+        ]
+    )
+    predicted = _state(
+        monsters=[
+            Monster(name="A", current_hp=14, max_hp=20, index=0),
+            Monster(name="B", current_hp=30, max_hp=30, index=1),
+        ]
+    )
+    vision = _state(monsters=[Monster(name="A", current_hp=14, max_hp=20, index=0)])
+
+    out = reconcile(vision, predicted, before)
+
+    assert [(m.index, m.name, m.current_hp) for m in out.combat_state.monsters] == [
+        (0, "A", 14),
+        (1, "B", 30),
+    ]
+
+
 def test_implausible_energy_falls_back_to_prediction():
     vision = _state(energy=88)
     predicted = _state(energy=2)

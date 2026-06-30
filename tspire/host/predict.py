@@ -90,8 +90,12 @@ def _predict_play(before: GameState, args: list[str]) -> GameState | None:
         targets = _attack_targets(combat.monsters, data.aoe, target_index)
         for monster in targets:
             hit = int(per_hit * 1.5) if _power(monster, "vulnerable") > 0 else per_hit
-            total = hit * max(1, data.hits)
-            monster.current_hp = max(0, monster.current_hp - total)
+            damage_left = hit * max(1, data.hits)
+            if monster.block > 0:
+                blocked = min(monster.block, damage_left)
+                monster.block -= blocked
+                damage_left -= blocked
+            monster.current_hp = max(0, monster.current_hp - damage_left)
             if monster.current_hp == 0:
                 monster.is_gone = True
 

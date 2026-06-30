@@ -1,6 +1,12 @@
 from tspire.host.config import HostConfig
 
 
+def test_default_ollama_model_is_cloud_model(monkeypatch):
+    monkeypatch.delenv("TSPIRE_OLLAMA_MODEL", raising=False)
+    cfg = HostConfig.load(path="missing-config.json")
+    assert cfg.ollama_model == "gemma4:31b-cloud"
+
+
 def test_ollama_env_overrides(monkeypatch):
     monkeypatch.setenv("TSPIRE_VISION_MODE", "llm")
     monkeypatch.setenv("TSPIRE_OLLAMA_URL", "http://example.test:11434")

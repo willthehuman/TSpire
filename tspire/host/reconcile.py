@@ -14,10 +14,11 @@ them.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import logging
 from typing import Protocol
 
-from tspire.common.schema import GameState
+from tspire.common.schema import GameState, Monster
 
 log = logging.getLogger("tspire.host.reconcile")
 
@@ -43,6 +44,7 @@ def reconcile(
     *,
     tol: int = TOL,
     diverge: int = DIVERGE,
+    allow_monster_overrides: bool = True,
 ) -> GameState:
     """Return ``vision`` with implausible combat values corrected toward ``predicted``.
 
@@ -91,17 +93,25 @@ def reconcile(
         vcombat.player.block = max(0, pcombat.player.block)
 
     # ---- monster hp (no fixed region -> rule-only, no arbiter) ----------
-    predicted_by_index = {m.index: m for m in pcombat.monsters}
     before_by_index = {m.index: m for m in bcombat.monsters} if bcombat else {}
+    matched_predicted: set[int] = set()
     for monster in vcombat.monsters:
-        pred = predicted_by_index.get(monster.index)
+        pred = _match_monster(monster, pcombat.monsters, matched_predicted)
         if pred is None:
             continue
-        prev = before_by_index.get(monster.index)
+        matched_predicted.add(id(pred))
+        monster.index = pred.index
+        if not monster.name:
+            monster.name = pred.name
+        if not monster.monster_id:
+            monster.monster_id = pred.monster_id
+        if monster.max_hp <= 0:
+            monster.max_hp = pred.max_hp
+        prev = before_by_index.get(pred.index) or before_by_index.get(monster.index)
         prev_hp = prev.current_hp if prev else pred.current_hp
         increased = prev_hp > 0 and monster.current_hp > prev_hp
         diverged = abs(monster.current_hp - pred.current_hp) > diverge
-        if increased or diverged:
+        if allow_monster_overrides and (increased or diverged):
             log.debug(
                 "reconcile monster[%d] hp: vision=%s -> predicted=%s",
                 monster.index,
@@ -109,6 +119,12 @@ def reconcile(
                 pred.current_hp,
             )
             monster.current_hp = pred.current_hp
+
+    for monster in pcombat.monsters:
+        if id(monster) in matched_predicted or not _alive(monster):
+            continue
+        log.debug("reconcile monster[%d]: carrying predicted live monster missing from vision", monster.index)
+        vcombat.monsters.append(deepcopy(monster))
 
     return vision
 
@@ -150,3 +166,37 @@ def _implausible_energy(energy: int) -> bool:
 
 def _nearest(reference: int, *candidates: int) -> int:
     return min(candidates, key=lambda c: abs(c - reference))
+
+
+def _alive(monster: Monster) -> bool:
+    if monster.is_gone or monster.half_dead:
+        return False
+    return monster.max_hp > 0 or monster.current_hp > 0
+
+
+def _match_monster(
+    vision: Monster,
+    predicted: list[Monster],
+    used: set[int],
+) -> Monster | None:
+    candidates = [m for m in predicted if id(m) not in used]
+    if not candidates:
+        return None
+    scored = [(_monster_match_score(vision, candidate), candidate) for candidate in candidates]
+    score, match = max(scored, key=lambda item: item[0])
+    return match if score > 0 else None
+
+
+def _monster_match_score(vision: Monster, predicted: Monster) -> int:
+    score = 0
+    if vision.index == predicted.index:
+        score += 3
+    v_name = (vision.monster_id or vision.name).strip().lower()
+    p_name = (predicted.monster_id or predicted.name).strip().lower()
+    if v_name and p_name and v_name == p_name:
+        score += 8
+    if vision.max_hp > 0 and vision.max_hp == predicted.max_hp:
+        score += 6
+    if vision.current_hp > 0 and predicted.current_hp > 0:
+        score += max(0, 5 - min(5, abs(vision.current_hp - predicted.current_hp)))
+    return score
