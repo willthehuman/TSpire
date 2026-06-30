@@ -183,8 +183,149 @@ def run(args) -> int:
     return 0 if verdict == PASS else 1
 
 
+def run_mouse(args) -> int:
+    """Calibration/diagnostic for the mouse backend.
+
+    Grabs a live combat frame, computes the click points the mouse backend would use for
+    every hand card, monster, the play zone and the end-turn button, overlays them on the
+    frame for eyeballing, and optionally performs one real play so you can confirm the
+    coordinates land. Run with StS in a combat (controller support irrelevant here).
+    """
+    config = HostConfig.load()
+    if args.dry_run:
+        config.input_dry_run = True
+
+    from tspire.host.input.mouse import CardTargetLocator, build_mouse_driver
+    from tspire.host.state import ScreenStateProvider
+
+    state_provider = ScreenStateProvider(config)
+    capture = state_provider.capture
+    try:
+        capture.ensure_foreground(click_safe_zone=False)
+    except Exception:
+        log.debug("could not foreground game window", exc_info=True)
+
+    state = state_provider.read()
+    if state.screen_type != ScreenType.COMBAT or state.combat_state is None:
+        print(f"not in combat (screen: {state.screen_type.value}); enter a combat first")
+        return 1
+    combat = state.combat_state
+    print(f"hand={len(combat.hand)} monsters={[m.index for m in combat.monsters]}")
+
+    # CV diagnostics (informational only): card positions now come from StS's exact hand
+    # layout, so CV card detection no longer matters for hands up to 10. Bars still drive
+    # monster targeting.
+    found_bars = []
+    try:
+        backend = state_provider._get_backend()
+        frame = capture.grab()
+        found_cards = backend.find_cards(frame, state_provider.regions.hand_search)
+        found_bars = backend.find_red_bars(frame, state_provider.regions.monster_search)
+        print(f"CV find_cards: {len(found_cards)} box(es) [informational]; "
+              f"find_red_bars: {len(found_bars)} bar(s) of {len(combat.monsters)} monster(s)")
+        for i, b in enumerate(found_bars):
+            print(f"    bar {i}: left={b.left} top={b.top} w={b.width} h={b.height} "
+                  f"-> centre=({b.left + b.width // 2}, {b.top + b.height // 2})")
+    except Exception:
+        log.debug("CV detection diagnostics failed", exc_info=True)
+
+    locator = CardTargetLocator(state_provider, config)
+    layout = locator.locate(expected_hand=len(combat.hand), monsters=combat.monsters)
+    play_zone = locator.play_zone_point()
+    end_turn = locator.end_turn_point()
+
+    print(f"card source: {layout.card_source}")
+    for i, point in enumerate(layout.cards):
+        print(f"  card {i}: {point}")
+    for index, point in sorted(layout.monsters.items()):
+        print(f"  monster {index}: {point}")
+    print(f"  play zone: {play_zone}")
+    print(f"  end turn:  {end_turn}")
+
+    _overlay_mouse_points(capture, layout, play_zone, end_turn, args.save_frames, found_bars)
+
+    if args.play_card is not None:
+        from tspire.host.input.mouse import MouseCommandHandler
+        from tspire.common import protocol
+
+        handler = MouseCommandHandler(config, state_provider, locator=locator)
+        play_args = [str(args.play_card)]
+        if args.target is not None:
+            play_args.append(str(args.target))
+        print(f"playing card {play_args} ...")
+        ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, play_args), state_hint=state)
+        print(f"{'PASS' if ok else 'FAIL'}: {error or 'state changed'}")
+        return 0 if ok else 1
+    return 0
+
+
+def _overlay_mouse_points(capture, layout, play_zone, end_turn, save_dir, bars=()) -> None:
+    try:
+        import cv2
+
+        frame = capture.grab().copy()
+        cr = capture.client_rect()
+    except Exception:
+        log.debug("could not capture frame for overlay", exc_info=True)
+        return
+
+    def to_frame(point):
+        return (int(point[0] - cr.left), int(point[1] - cr.top))
+
+    # Draw the raw detected HP bars (frame-space already) in white so we can see what the
+    # detector found vs. where the chosen targets landed.
+    for b in bars:
+        cv2.rectangle(frame, (b.left, b.top), (b.left + b.width, b.top + b.height), (255, 255, 255), 2)
+
+    # Draw the search regions so it's obvious whether they actually cover the cards/enemies.
+    fh, fw = frame.shape[:2]
+    regions = getattr(capture, "regions", None)
+    try:
+        from tspire.host.vision import region_map_for
+
+        rmap = region_map_for(fw, fh)
+        for name, color in (("hand_search", (0, 255, 255)), ("monster_search", (255, 255, 0))):
+            rect = getattr(rmap, name)
+            x, y, w, h = rect.to_pixels(fw, fh)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            cv2.putText(frame, name, (x + 4, y + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    except Exception:
+        log.debug("could not draw search regions", exc_info=True)
+
+    for i, point in enumerate(layout.cards):
+        fx, fy = to_frame(point)
+        cv2.circle(frame, (fx, fy), 10, (0, 255, 0), 2)
+        cv2.putText(frame, f"c{i}", (fx + 8, fy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    for index, point in layout.monsters.items():
+        fx, fy = to_frame(point)
+        cv2.circle(frame, (fx, fy), 12, (0, 0, 255), 2)
+        cv2.putText(frame, f"m{index}", (fx + 8, fy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    for label, point, color in (("play", play_zone, (255, 200, 0)), ("end", end_turn, (255, 0, 255))):
+        fx, fy = to_frame(point)
+        cv2.drawMarker(frame, (fx, fy), color, cv2.MARKER_CROSS, 24, 2)
+        cv2.putText(frame, label, (fx + 8, fy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+    from pathlib import Path
+
+    out_dir = Path(save_dir) if save_dir else Path.cwd()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "mouse_points.png"
+    cv2.imwrite(str(out_path), frame)
+    print(f"overlay written to {out_path}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Probe whether StS detects the virtual controller.")
+    parser.add_argument(
+        "--mouse",
+        action="store_true",
+        help="mouse-backend calibration: overlay the computed card/monster/play/end click "
+        "points on a live combat frame (and optionally play a card with --play-card)",
+    )
+    parser.add_argument("--play-card", type=int, default=None, dest="play_card",
+                        help="(mouse mode) actually play this hand index, for an end-to-end check")
+    parser.add_argument("--target", type=int, default=None,
+                        help="(mouse mode) target monster index for --play-card")
     parser.add_argument(
         "--sequence",
         default="left,left,right,right",
@@ -223,6 +364,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
+    if args.mouse:
+        return run_mouse(args)
     return run(args)
 
 

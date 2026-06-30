@@ -1,7 +1,7 @@
 from tspire.common import protocol
 from tspire.common.schema import Card, CombatState, GameState, Monster, PlayerCombat, ScreenType
 from tspire.host.config import HostConfig
-from tspire.host.input.driver import normalize_token
+from tspire.host.input.driver import KeyboardDriver, normalize_token
 from tspire.host.input.executor import GamepadCommandHandler, _hand_direction, _hand_steps
 from tspire.host.input.focus import FocusState
 
@@ -317,6 +317,44 @@ def test_end_turn_requires_combat_state_change():
     ok, error = handler.execute(protocol.Command(protocol.Verb.END))
     assert not ok
     assert "no combat state change" in error
+    assert driver.presses == ["end_turn"]
+
+
+def test_keyboard_backend_foregrounds_without_safe_zone_click():
+    class Capture:
+        def __init__(self):
+            self.click_safe_zone_values = []
+
+        def ensure_foreground(self, *, click_safe_zone=True):
+            self.click_safe_zone_values.append(click_safe_zone)
+            return True
+
+    class Provider(FakeStateProvider):
+        def __init__(self, states):
+            super().__init__(states)
+            self.capture = Capture()
+
+    class FakeKeyboardDriver(KeyboardDriver):
+        available = True
+        diagnostic = None
+
+        def __init__(self):
+            self.presses = []
+
+        def press(self, token, duration=None):
+            self.presses.append(normalize_token(token))
+
+        def close(self):
+            pass
+
+    provider = Provider([_combat()])
+    driver = FakeKeyboardDriver()
+    handler = GamepadCommandHandler(_cfg(), provider, driver=driver)
+
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PROCEED))
+
+    assert ok and error is None
+    assert provider.capture.click_safe_zone_values == [False]
     assert driver.presses == ["proceed"]
 
 
@@ -337,17 +375,32 @@ def test_combat_input_rejects_stale_combat_state():
     assert "fresh combat state" in error
 
 
-def test_build_session_wires_gamepad_handler():
+def _require_websockets():
     try:
         import websockets  # noqa: F401
     except ModuleNotFoundError:
         try:
             import pytest
         except ModuleNotFoundError:
-            return
+            return False
         pytest.skip("websockets is not installed")
+    return True
 
+
+def test_build_session_wires_mouse_handler_by_default():
+    if not _require_websockets():
+        return
     from tspire.host import server
+    from tspire.host.input.mouse import MouseCommandHandler
 
     session = server.build_session(_cfg(input_dry_run=True))
+    assert isinstance(session.command_handler, MouseCommandHandler)
+
+
+def test_build_session_wires_gamepad_handler():
+    if not _require_websockets():
+        return
+    from tspire.host import server
+
+    session = server.build_session(_cfg(input_dry_run=True, input_backend="gamepad"))
     assert isinstance(session.command_handler, GamepadCommandHandler)

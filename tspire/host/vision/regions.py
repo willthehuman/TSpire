@@ -41,18 +41,30 @@ class RegionMap:
     """
 
     # --- top panel (always visible) ---
+    # NOTE: gold/floor/top_hp X positions are laid out by TopPanel RELATIVE to the rendered
+    # width of the preceding text (character name, HP value, ...), so they shift run-to-run
+    # and have no fixed fraction -- hence these stay broad estimates and rely on the OCR->LLM
+    # fallback. (Verified against the decompiled TopPanel: nameX -> titleX -> hpIconX ->
+    # goldIconX -> floorX chain.)
     gold: Rect = Rect(0.245, 0.010, 0.060, 0.045)
     top_hp: Rect = Rect(0.145, 0.015, 0.100, 0.060)  # top-bar heart + "cur/max" text
     floor: Rect = Rect(0.470, 0.010, 0.060, 0.050)  # floor number, top-center banner
-    deck_count: Rect = Rect(0.885, 0.010, 0.080, 0.080)  # master deck count, top-right
+    # Deck icon is fixed at the top-right: DECK_X = WIDTH - (ICON_W(64)+PAD(10))*2, centre
+    # at WIDTH - 116*scale, ICON_Y = HEIGHT - 32*scale -> (0.940, 0.030). (decompiled TopPanel)
+    deck_count: Rect = Rect(0.900, 0.008, 0.080, 0.075)  # master deck count, top-right
     relics_search: Rect = Rect(0.015, 0.075, 0.430, 0.085)  # left-to-right relic row
     potions_search: Rect = Rect(0.295, 0.010, 0.110, 0.075)  # potion belt (next to gold)
 
-    # --- player, in combat ---
-    player_hp: Rect = Rect(0.185, 0.675, 0.135, 0.065)  # red HP bar + "cur/max" text
+    # --- player, in combat (exact, derived from the decompiled game) ---
+    # Player draws at drawX = WIDTH*0.25, floorY = 340*yScale. The HP "cur/max" text sits on
+    # the health bar at centre (0.25*W - 4*scale, HEIGHT-(floorY+hb_y-barH/2)) ~ (0.248, 0.709),
+    # bar width = hitbox width 220*scale (~0.115). Box tightened to the number for cleaner OCR.
+    player_hp: Rect = Rect(0.186, 0.688, 0.124, 0.044)  # red HP bar + "cur/max" text
     player_powers_search: Rect = Rect(0.175, 0.715, 0.170, 0.070)  # player buffs/debuffs
     player_block: Rect = Rect(0.160, 0.640, 0.060, 0.045)  # shield badge, when block > 0
-    energy: Rect = Rect(0.065, 0.760, 0.080, 0.120)  # energy orb "cur/max", bottom-left
+    # Energy number is rendered centred at (198*xScale, 190*yScale) from the bottom-left ->
+    # (0.103, 0.824); box tightened to the digits (excludes the orb art below). (EnergyPanel)
+    energy: Rect = Rect(0.063, 0.788, 0.080, 0.074)  # energy orb "cur/max", bottom-left
 
     # --- end-turn button (bottom-right): used by the classifier to detect combat ---
     end_turn: Rect = Rect(0.790, 0.775, 0.150, 0.105)
@@ -65,7 +77,10 @@ class RegionMap:
     # Monster HP bars sit on the ground line; restricting to that band (rather than the
     # whole enemy area) rejects most background-red false positives. We locate each enemy
     # by its HP bar, then read intent/sprite *above* it in the full frame.
-    monster_search: Rect = Rect(0.450, 0.600, 0.420, 0.180)
+    # Enemies sit on the right half (the player is fixed at x=0.25) and spread from just right
+    # of centre toward the edge, so keep X wide. Keep Y on the ground-line band where HP bars
+    # live -- too tall a band catches red intent/status icons above the sprites as false bars.
+    monster_search: Rect = Rect(0.420, 0.600, 0.575, 0.220)
     # Hand fans across the bottom-center; cards located by their bright frames.
     hand_search: Rect = Rect(0.230, 0.760, 0.545, 0.235)
 

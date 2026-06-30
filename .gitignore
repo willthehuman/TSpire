@@ -19,3 +19,6 @@ Screenshot*.png
 
 # Test artifacts
 .pytest_cache/
+
+# Decompiled game sources (copyright) and the decompiler jar - never commit
+tools/decomp/

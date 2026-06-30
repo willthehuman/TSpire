@@ -25,7 +25,7 @@ from textual.widgets import Header, Input, RichLog, Static
 from textual.widget import Widget
 from rich.text import Text
 
-from tspire.client.commands import HELP_TEXT, parse_line
+from tspire.client.commands import HELP_TEXT, parse_chain, parse_line
 from tspire.client.connection import HostConnection
 from tspire.client.views import render_state
 from tspire.common import protocol
@@ -147,7 +147,7 @@ class TSpireApp(App):
             log.write("[yellow]busy:[/yellow] command already running")
             return
         available = self.state.available_commands if self.state else []
-        result = parse_line(line, available)
+        result = parse_chain(line, available) if ";" in line else parse_line(line, available)
         if result.error:
             log.write(f"[red]error:[/red] {result.error}")
             return
@@ -158,13 +158,19 @@ class TSpireApp(App):
         if result.note:
             log.write(f"[dim]{result.note}[/]")
         if result.command is None:
-            return
+            if not result.commands:
+                return
         self._remember_command(line)
         try:
-            command_id = await self.conn.send_command(result.command.verb, result.command.args)
-            label = f"{result.command.verb} {' '.join(result.command.args)}".rstrip()
+            if result.commands:
+                command_id = await self.conn.send_chain(result.commands)
+                label = _chain_label(result.commands)
+            else:
+                assert result.command is not None
+                command_id = await self.conn.send_command(result.command.verb, result.command.args)
+                label = f"{result.command.verb} {' '.join(result.command.args)}".rstrip()
             self._set_pending(str(command_id), label)
-            log.write(f"[cyan]>[/] {result.command.verb} {' '.join(result.command.args)}".rstrip())
+            log.write(f"[cyan]>[/] {label}")
         except ConnectionError:
             self._clear_pending()
             log.write("[yellow]not connected yet; retrying in the background...[/]")
@@ -393,6 +399,10 @@ def main() -> None:
     args = parser.parse_args()
     url = f"ws://{args.host}:{args.port}"
     TSpireApp(url).run()
+
+
+def _chain_label(commands: list[protocol.Command]) -> str:
+    return "; ".join(f"{command.verb} {' '.join(command.args)}".rstrip() for command in commands)
 
 
 if __name__ == "__main__":

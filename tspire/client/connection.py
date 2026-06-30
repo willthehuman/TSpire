@@ -35,6 +35,14 @@ class HostConnection:
         await self._ws.send(command.to_message())
         return command.id
 
+    async def send_chain(self, commands: list[protocol.Command]) -> str:
+        """Send a command chain; returns the generated chain id."""
+        if self._ws is None:
+            raise ConnectionError("not connected")
+        command_id = str(next(self._id_counter))
+        await self._ws.send(protocol.chain_message(command_id, commands))
+        return command_id
+
     async def messages(self) -> AsyncIterator[dict]:
         """Yield decoded messages, reconnecting on drop if enabled."""
         backoff = 1.0

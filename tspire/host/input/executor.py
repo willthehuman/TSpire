@@ -14,6 +14,7 @@ from tspire.host.input.driver import (
     GamepadDriver,
     InputTiming,
     InputUnavailable,
+    KeyboardDriver,
     build_driver,
     normalize_token,
 )
@@ -70,9 +71,17 @@ class GamepadCommandHandler:
         self,
         command: protocol.Command,
         state_hint: GameState | None = None,
+        *,
+        verify_state_change: bool = True,
+        note_action: bool = True,
     ) -> tuple[bool, str | None]:
         try:
-            return self._execute(command, state_hint)
+            return self._execute(
+                command,
+                state_hint,
+                verify_state_change=verify_state_change,
+                note_action=note_action,
+            )
         except (CommandError, ValueError, InputUnavailable) as exc:
             return False, str(exc)
         except Exception:
@@ -83,6 +92,9 @@ class GamepadCommandHandler:
         self,
         command: protocol.Command,
         state_hint: GameState | None = None,
+        *,
+        verify_state_change: bool = True,
+        note_action: bool = True,
     ) -> tuple[bool, str | None]:
         if command.verb == protocol.Verb.STATE:
             return True, None
@@ -105,15 +117,21 @@ class GamepadCommandHandler:
             return True, None
         if command.verb == protocol.Verb.END:
             before = self._require_combat(state_hint)
-            self._note_action(command, before)
-            ok, error = self._end_turn(before)
+            if note_action:
+                self._note_action(command, before)
+            ok, error = self._end_turn(before, verify_state_change=verify_state_change)
             if not ok:
                 self._clear_pending_action()
             return ok, error
         if command.verb == protocol.Verb.PLAY:
             before = self._require_combat(state_hint)
-            self._note_action(command, before)
-            ok, error = self._play(command.args, before)
+            if note_action:
+                self._note_action(command, before)
+            ok, error = self._play(
+                command.args,
+                before,
+                verify_state_change=verify_state_change,
+            )
             if not ok:
                 self._clear_pending_action()
             return ok, error
@@ -149,9 +167,11 @@ class GamepadCommandHandler:
             self._press(token)
         return True, None
 
-    def _end_turn(self, before: GameState) -> tuple[bool, str | None]:
+    def _end_turn(self, before: GameState, *, verify_state_change: bool = True) -> tuple[bool, str | None]:
         before_sig = _state_signature(before)
-        self._press("proceed")
+        self._press("end_turn")
+        if not verify_state_change:
+            return True, None
         if not self._wait_for_change(before_sig):
             return False, "end turn input sent, but no combat state change was observed"
         return True, None
@@ -160,6 +180,8 @@ class GamepadCommandHandler:
         self,
         args: list[str],
         before: GameState,
+        *,
+        verify_state_change: bool = True,
     ) -> tuple[bool, str | None]:
         combat = before.combat_state
         assert combat is not None  # for type checkers; _require_combat guarantees it.
@@ -180,6 +202,8 @@ class GamepadCommandHandler:
                 self._press("cancel")
                 return False, f"could not verify focus on target {target_index}"
             self._press("select")
+            if not verify_state_change:
+                return True, None
             if not self._wait_for_change(before_sig):
                 return False, "play input sent, but no combat state change was observed"
             return True, None
@@ -187,6 +211,8 @@ class GamepadCommandHandler:
         if self._target_focus_appeared(len(combat.monsters)):
             self._press("cancel")
             return False, "card did not resolve; provide a target index if it requires one"
+        if not verify_state_change:
+            return True, None
         if not self._wait_for_change(before_sig):
             return False, "play input sent, but no combat state change was observed"
         return True, None
@@ -398,7 +424,11 @@ class GamepadCommandHandler:
         if ensure is None or self._verification_bypassed:
             return True
         try:
-            ok = bool(ensure())
+            click_safe_zone = not isinstance(self.driver, KeyboardDriver)
+            try:
+                ok = bool(ensure(click_safe_zone=click_safe_zone))
+            except TypeError:
+                ok = bool(ensure())
         except Exception:
             log.debug("could not foreground game window", exc_info=True)
             ok = False

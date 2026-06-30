@@ -90,6 +90,17 @@ def test_command_message_round_trip():
     assert restored == cmd
 
 
+def test_chain_message_round_trip():
+    commands = [
+        protocol.Command(verb=protocol.Verb.PLAY, args=["0", "0"]),
+        protocol.Command(verb=protocol.Verb.END),
+    ]
+    data = protocol.parse_message(protocol.chain_message("c1", commands))
+    assert data["type"] == "chain"
+    assert data["id"] == "c1"
+    assert protocol.commands_from_message(data) == commands
+
+
 def test_state_message_is_parseable():
     msg = protocol.state_message(_sample_state())
     data = protocol.parse_message(msg)

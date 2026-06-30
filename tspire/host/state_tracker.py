@@ -21,7 +21,11 @@ READ_FRESH = "fresh"
 READ_STALE = "stale"
 READ_UNCERTAIN = "uncertain"
 
-_MIN_COMBAT_CONFIDENCE = 0.67
+# A combat read is commandable when the player HUD (HP + energy) reads cleanly; the scene
+# (monsters/hand) is stabilized/carried separately, so a momentarily poor scene parse should
+# NOT block play. So the real gate is field-presence in `_acceptable_combat`, and this
+# confidence floor only rejects the truly empty read (nothing parsed at all).
+_MIN_COMBAT_CONFIDENCE = 0.33
 _UNKNOWN_TRACKED_FIELDS = (
     "gold",
     "floor",
@@ -85,6 +89,7 @@ class FrameObservation:
 class PendingAction:
     command: protocol.Command
     before: GameState
+    predicted: GameState | None = None
 
 
 class StateTracker:
@@ -100,6 +105,22 @@ class StateTracker:
             self.pending = None
             return
         self.pending = PendingAction(command=deepcopy(command), before=deepcopy(before_state))
+
+    def note_prediction(
+        self,
+        commands: list[protocol.Command],
+        before_state: GameState | None,
+        predicted_state: GameState | None,
+    ) -> None:
+        if not _is_fresh_combat(before_state) or not _is_fresh_combat(predicted_state):
+            self.pending = None
+            return
+        label = ";".join(command.verb for command in commands) or "chain"
+        self.pending = PendingAction(
+            command=protocol.Command("chain", [label]),
+            before=deepcopy(before_state),
+            predicted=deepcopy(predicted_state),
+        )
 
     def clear_pending(self) -> None:
         self.pending = None
@@ -294,7 +315,7 @@ class StateTracker:
         self.pending = None
         if pending is None or not self.config.predict_enabled:
             return state
-        predicted = predict(pending.before, pending.command)
+        predicted = deepcopy(pending.predicted) if pending.predicted is not None else predict(pending.before, pending.command)
         if predicted is None:
             return state
         allow_monster_overrides = _is_fresh_combat(pending.before)

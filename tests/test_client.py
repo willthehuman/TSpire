@@ -9,7 +9,7 @@ import pytest
 textual = pytest.importorskip("textual")
 from rich.console import Console  # noqa: E402
 
-from tspire.client.commands import parse_line  # noqa: E402
+from tspire.client.commands import parse_chain, parse_line  # noqa: E402
 from tspire.client.views import combat_panel, intent_label, render_state  # noqa: E402
 from tspire.common import protocol  # noqa: E402
 from tspire.common.schema import CombatState, GameState, Intent, ScreenType  # noqa: E402
@@ -85,6 +85,31 @@ def test_parse_missing_index():
 def test_parse_bad_index():
     r = parse_line("play foo", COMBAT)
     assert r.command is None and "number" in r.error
+
+
+def test_parse_command_chain():
+    r = parse_chain("p 0 0; p 0 0; e", COMBAT)
+    assert r.error is None
+    assert [(c.verb, c.args) for c in r.commands] == [
+        (protocol.Verb.PLAY, ["0", "0"]),
+        (protocol.Verb.PLAY, ["0", "0"]),
+        (protocol.Verb.END, []),
+    ]
+
+
+def test_parse_chain_rejects_empty_segment():
+    r = parse_chain("p 0 0;;e", COMBAT)
+    assert r.command is None and r.error and "empty" in r.error
+
+
+def test_parse_chain_rejects_state_and_raw():
+    assert "not allowed" in parse_chain("p 0 0; state", COMBAT).error
+    assert "not allowed" in parse_chain("p 0 0; raw a", COMBAT).error
+
+
+def test_parse_chain_requires_terminal_command_last():
+    r = parse_chain("e; p 0 0", COMBAT)
+    assert r.command is None and r.error and "last" in r.error
 
 
 # --- dashboard rendering (pure functions) ----------------------------------
@@ -168,6 +193,13 @@ class _FakeConn:
         self.sent_ids.append(command_id)
         return command_id
 
+    async def send_chain(self, commands):
+        command_id = str(self._next_id)
+        self._next_id += 1
+        self.sent.append(("chain", [(c.verb, c.args) for c in commands]))
+        self.sent_ids.append(command_id)
+        return command_id
+
     async def messages(self):
         while True:
             yield await self.frames.get()
@@ -207,6 +239,41 @@ async def test_app_sends_command_on_submit():
         cmd.value = "p 0 0"
         await pilot.press("enter")
         assert ("play", ["0", "0"]) in conn.sent
+
+
+@pytest.mark.asyncio
+async def test_app_sends_chain_on_submit_and_clears_after_state():
+    from tspire.client.app import TSpireApp
+
+    state = ts._sample_state()
+    conn = _FakeConn({"type": "state", "state": state.to_dict()})
+    app = TSpireApp(connection=conn)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        cmd = app.query_one("#cmd")
+        cmd.value = "p 0 0; p 0 0; e"
+        await pilot.press("enter")
+
+        command_id = conn.sent_ids[-1]
+        assert conn.sent[-1] == (
+            "chain",
+            [
+                ("play", ["0", "0"]),
+                ("play", ["0", "0"]),
+                ("end", []),
+            ],
+        )
+        assert app._pending_command_id == command_id
+        assert cmd.disabled
+
+        await conn.push({"type": "ack", "id": command_id, "ok": True, "error": None, "results": []})
+        await pilot.pause()
+        assert app._pending_command_id == command_id
+
+        await conn.push({"type": "state", "state": state.to_dict()})
+        await pilot.pause()
+        assert app._pending_command_id is None
+        assert not cmd.disabled
 
 
 def _plain(widget) -> str:

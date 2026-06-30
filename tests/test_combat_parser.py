@@ -44,12 +44,14 @@ def test_region_map_lists_all_named_regions():
 
 def test_default_regions_align_with_1920x1080_client_layout():
     regions = RegionMap()
-    assert regions.energy.to_pixels(1920, 1080) == (125, 821, 154, 130)
+    # energy / player_hp / deck_count are derived from the decompiled game (EnergyPanel,
+    # AbstractCreature health bar, TopPanel deck icon) and tightened to the digits.
+    assert regions.energy.to_pixels(1920, 1080) == (121, 851, 154, 80)
     assert regions.top_hp.to_pixels(1920, 1080) == (278, 16, 192, 65)
-    assert regions.player_hp.to_pixels(1920, 1080) == (355, 729, 259, 70)
+    assert regions.player_hp.to_pixels(1920, 1080) == (357, 743, 238, 48)
     assert regions.player_powers_search.to_pixels(1920, 1080) == (336, 772, 326, 76)
     assert regions.floor.to_pixels(1920, 1080) == (902, 11, 115, 54)
-    assert regions.deck_count.to_pixels(1920, 1080) == (1699, 11, 154, 86)
+    assert regions.deck_count.to_pixels(1920, 1080) == (1728, 9, 154, 81)
     assert regions.relics_search.to_pixels(1920, 1080) == (29, 81, 826, 92)
     assert regions.potions_search.to_pixels(1920, 1080) == (566, 11, 211, 81)
     assert regions.draw_pile.to_pixels(1920, 1080) == (38, 967, 144, 108)

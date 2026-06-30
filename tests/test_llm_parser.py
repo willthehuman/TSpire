@@ -21,6 +21,67 @@ def _parser() -> OllamaVisionParser:
     return OllamaVisionParser(model="m", url="http://x", regions=RegionMap())
 
 
+class _FakeOcr:
+    """Stand-in for the CV backend's OCR methods, recording the regions it was asked for."""
+
+    def __init__(self, pairs, ints):
+        self._pairs = pairs
+        self._ints = ints
+        self.pair_calls = []
+        self.int_calls = []
+
+    def ocr_int_pair(self, frame, rect):
+        self.pair_calls.append(rect)
+        return self._pairs.get(rect, (0, 0))
+
+    def ocr_int(self, frame, rect, *, default=0):
+        self.int_calls.append(rect)
+        return self._ints.get(rect, default)
+
+
+def test_parse_combat_reads_hud_numbers_via_ocr_without_model_crops(monkeypatch):
+    parser = _parser()
+    r = parser.regions
+    monkeypatch.setattr(parser, "_scene", lambda frame: {
+        "monsters": [{"name": "Jaw Worm", "current_hp": 40, "max_hp": 44, "intent": "attack"}],
+        "hand": [{"name": "Strike", "cost": 1}],
+    })
+
+    def _no_model_pair(*a, **k):
+        raise AssertionError("model _pair must not be called when OCR succeeds")
+
+    def _no_model_value(*a, **k):
+        raise AssertionError("model _value must not be called when OCR succeeds")
+
+    monkeypatch.setattr(parser, "_pair", _no_model_pair)
+    monkeypatch.setattr(parser, "_value", _no_model_value)
+
+    ocr = _FakeOcr(
+        pairs={r.energy: (3, 3), r.player_hp: (68, 80)},
+        ints={r.gold: 99, r.floor: 4, r.deck_count: 11},
+    )
+    result = parser.parse_combat(object(), ocr=ocr)
+
+    p = result.combat.player
+    assert (p.energy, p.current_hp, p.max_hp) == (3, 68, 80)
+    assert (result.gold, result.floor, result.deck_count) == (99, 4, 11)
+
+
+def test_parse_combat_falls_back_to_model_when_ocr_blank(monkeypatch):
+    parser = _parser()
+    monkeypatch.setattr(parser, "_scene", lambda frame: {"monsters": [], "hand": []})
+    monkeypatch.setattr(parser, "_pair",
+                        lambda frame, rect, prompt: (3, 3) if prompt is _ENERGY_PROMPT else (80, 80))
+    monkeypatch.setattr(parser, "_value", lambda frame, rect, prompt, allow_zero=True: (7, True))
+
+    ocr = _FakeOcr(pairs={}, ints={})  # OCR reads nothing -> model crops used
+    result = parser.parse_combat(object(), ocr=ocr)
+
+    p = result.combat.player
+    assert (p.energy, p.current_hp, p.max_hp) == (3, 80, 80)
+    assert result.gold == 7
+
+
 def test_to_monster_maps_intent_and_blanks_placeholder_name():
     m = OllamaVisionParser._to_monster(
         {"name": "None", "current_hp": 11, "max_hp": 17, "intent": "Attack", "intent_value": 7},
@@ -152,6 +213,7 @@ def test_generate_text_sends_configured_model_and_schema(monkeypatch):
     assert captured["url"] == "http://x/api/generate"
     assert captured["payload"]["model"] == "gemma4:31b-cloud"
     assert captured["payload"]["format"] == _VALUE_SCHEMA
+    assert captured["payload"]["think"] is False
     assert captured["payload"]["options"]["temperature"] == 0
 
 

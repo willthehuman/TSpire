@@ -1,13 +1,14 @@
-"""Gamepad driver abstraction.
+"""Input driver abstraction.
 
 The rest of the host talks in stable semantic tokens ("select", "left", "proceed")
-instead of vgamepad constants. Real input is lazy-imported so non-host environments can
-still import and test the executor.
+instead of backend-specific constants. Real input is lazy-imported so non-host
+environments can still import and test the executor.
 """
 
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from typing import Protocol
@@ -59,8 +60,8 @@ _ALIASES = {
     "view": "view",
     "y": "proceed",
     "proceed": "proceed",
-    "end": "proceed",
-    "end_turn": "proceed",
+    "end": "end_turn",
+    "end_turn": "end_turn",
     "lb": "page_left",
     "left_bumper": "page_left",
     "page_left": "page_left",
@@ -95,6 +96,7 @@ _BUTTON_MEMBERS = {
     "cancel": "XUSB_GAMEPAD_B",
     "view": "XUSB_GAMEPAD_X",
     "proceed": "XUSB_GAMEPAD_Y",
+    "end_turn": "XUSB_GAMEPAD_Y",
     "page_left": "XUSB_GAMEPAD_LEFT_SHOULDER",
     "page_right": "XUSB_GAMEPAD_RIGHT_SHOULDER",
     "map": "XUSB_GAMEPAD_BACK",
@@ -103,6 +105,21 @@ _BUTTON_MEMBERS = {
     "dpad_down": "XUSB_GAMEPAD_DPAD_DOWN",
     "dpad_left": "XUSB_GAMEPAD_DPAD_LEFT",
     "dpad_right": "XUSB_GAMEPAD_DPAD_RIGHT",
+}
+
+_KEYBOARD_KEYS = {
+    "select": 0x0D,  # VK_RETURN
+    "proceed": 0x0D,  # VK_RETURN
+    "cancel": 0x1B,  # VK_ESCAPE
+    "end_turn": 0x45,  # E
+    "left": 0x25,  # VK_LEFT
+    "right": 0x27,  # VK_RIGHT
+    "up": 0x26,  # VK_UP
+    "down": 0x28,  # VK_DOWN
+    "dpad_left": 0x25,
+    "dpad_right": 0x27,
+    "dpad_up": 0x26,
+    "dpad_down": 0x28,
 }
 
 _AXES = {
@@ -227,10 +244,61 @@ class VGamepadDriver:
         self._gamepad.update()
 
 
+class KeyboardDriver:
+    """Win32 keyboard-backed input driver."""
+
+    available = True
+    diagnostic = None
+
+    def __init__(self, timing: InputTiming | None = None) -> None:
+        self.timing = timing or InputTiming()
+        if sys.platform != "win32":  # pragma: no cover - host is Windows
+            raise InputUnavailable("keyboard input is only available on Windows")
+        try:
+            import ctypes
+
+            self._user32 = ctypes.windll.user32
+        except Exception as exc:  # pragma: no cover - platform dependent
+            raise InputUnavailable("could not initialize Win32 keyboard input") from exc
+
+    def press(self, token: str, duration: float | None = None) -> None:
+        normalized = normalize_token(token)
+        if normalized not in _KEYBOARD_KEYS:
+            raise ValueError(f"keyboard backend does not support input token {normalized!r}")
+        hold = self.timing.press_seconds if duration is None else max(0.0, duration)
+        vk = _KEYBOARD_KEYS[normalized]
+        self._user32.keybd_event(vk, 0, 0, 0)
+        if hold:
+            time.sleep(hold)
+        self._user32.keybd_event(vk, 0, 0x0002, 0)  # KEYEVENTF_KEYUP
+        if self.timing.step_delay:
+            time.sleep(self.timing.step_delay)
+
+    def close(self) -> None:
+        pass
+
+
 def build_driver(config, timing: InputTiming) -> GamepadDriver:
     if config.input_dry_run:
         return DryRunDriver(timing)
-    try:
-        return VGamepadDriver(timing)
-    except InputUnavailable as exc:
-        return DisabledDriver(str(exc))
+    backend = str(getattr(config, "input_backend", "keyboard") or "keyboard").lower()
+    if backend == "keyboard":
+        try:
+            return KeyboardDriver(timing)
+        except InputUnavailable as exc:
+            return DisabledDriver(str(exc))
+    if backend == "gamepad":
+        try:
+            return VGamepadDriver(timing)
+        except InputUnavailable as exc:
+            return DisabledDriver(str(exc))
+    if backend == "mouse":
+        # The mouse backend has its own command handler (tspire.host.input.mouse); it is not
+        # a token-press driver, so the server selects MouseCommandHandler instead of routing
+        # through here. Reaching this means the gamepad handler was built with a mouse config.
+        return DisabledDriver(
+            "mouse backend uses MouseCommandHandler, not the token-press driver"
+        )
+    return DisabledDriver(
+        f"unknown input backend {backend!r}; expected 'mouse', 'keyboard', or 'gamepad'"
+    )

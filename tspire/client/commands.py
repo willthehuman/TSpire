@@ -41,6 +41,7 @@ class ParseResult:
     command: protocol.Command | None  # None means client-only (help/empty) or an error
     error: str | None = None
     note: str | None = None  # client-only feedback (e.g. "help shown", "refreshed")
+    commands: list[protocol.Command] | None = None  # command chain
 
 
 def parse_line(line: str, available_commands: list[str]) -> ParseResult:
@@ -69,6 +70,42 @@ def parse_line(line: str, available_commands: list[str]) -> ParseResult:
     except ValueError as exc:
         return ParseResult(command=None, error=str(exc))
     return ParseResult(command=command)
+
+
+def parse_chain(line: str, available_commands: list[str]) -> ParseResult:
+    """Parse a semicolon-separated command chain."""
+    parts = line.split(";")
+    if len(parts) <= 1:
+        return parse_line(line, available_commands)
+    if any(not part.strip() for part in parts):
+        return ParseResult(command=None, error="chain contains an empty command segment.")
+
+    commands: list[protocol.Command] = []
+    for raw in parts:
+        result = parse_line(raw.strip(), available_commands)
+        if result.error:
+            return result
+        if result.note == HELP_TEXT or result.command is None:
+            return ParseResult(command=None, error="help is not allowed inside a command chain.")
+        if result.command.verb in {protocol.Verb.STATE, protocol.Verb.RAW}:
+            return ParseResult(
+                command=None,
+                error=f"'{result.command.verb}' is not allowed inside a command chain.",
+            )
+        commands.append(result.command)
+
+    terminal = {protocol.Verb.END, protocol.Verb.PROCEED, protocol.Verb.RETURN}
+    for i, command in enumerate(commands):
+        is_last = i == len(commands) - 1
+        if command.verb == protocol.Verb.PLAY:
+            continue
+        if command.verb in terminal and is_last:
+            continue
+        if command.verb in terminal:
+            return ParseResult(command=None, error=f"'{command.verb}' must be the last command in a chain.")
+        return ParseResult(command=None, error=f"'{command.verb}' is not supported in command chains.")
+
+    return ParseResult(command=None, commands=commands)
 
 
 def _build(verb: str, rest: list[str]) -> protocol.Command:

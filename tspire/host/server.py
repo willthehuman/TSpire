@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import logging
+from dataclasses import dataclass
 from typing import Protocol
 
 import websockets
@@ -25,8 +27,16 @@ from websockets.asyncio.server import ServerConnection, serve
 from tspire.common import protocol
 from tspire.common.schema import GameState, ScreenType
 from tspire.host.config import HostConfig
+from tspire.host.predict import predict
 
 log = logging.getLogger("tspire.host")
+
+
+@dataclass
+class _ChainStep:
+    command: protocol.Command
+    state_hint: GameState | None
+    predicted_after: GameState | None
 
 
 class StateProvider(Protocol):
@@ -42,6 +52,9 @@ class CommandHandler(Protocol):
         self,
         command: protocol.Command,
         state_hint: GameState | None = None,
+        *,
+        verify_state_change: bool = True,
+        note_action: bool = True,
     ) -> tuple[bool, str | None]: ...
 
 
@@ -141,21 +154,83 @@ class HostServer:
         except ValueError as exc:
             await self._send(ws, protocol.log_message(str(exc), level="error"))
             return
-        if data.get("type") != "command":
+        kind = data.get("type")
+        if kind == "command":
+            command = protocol.command_from_message(data)
+            async with self._command_lock:
+                await self._execute_one(ws, command)
             return
-        command = protocol.command_from_message(data)
-        async with self._command_lock:
-            state_hint = self.session.last_state
-            ok, error = await asyncio.to_thread(
-                self.session.command_handler.execute,
-                command,
-                state_hint,
-            )
-            await self._send(ws, protocol.ack_message(command.id, ok, error))
-            if protocol.is_state_altering(command.verb):
-                await asyncio.sleep(max(0.0, float(self.session.config.input_settle_seconds)))
-            # After any command, re-read and push the authoritative state.
+        if kind == "chain":
+            try:
+                commands = protocol.commands_from_message(data)
+            except ValueError as exc:
+                await self._send(ws, protocol.log_message(str(exc), level="error"))
+                return
+            command_id = str(data.get("id", ""))
+            async with self._command_lock:
+                await self._execute_chain(ws, command_id, commands)
+
+    async def _execute_one(self, ws: ServerConnection, command: protocol.Command) -> None:
+        state_hint = self.session.last_state
+        ok, error = await asyncio.to_thread(
+            self.session.command_handler.execute,
+            command,
+            state_hint,
+        )
+        await self._send(ws, protocol.ack_message(command.id, ok, error))
+        if protocol.is_state_altering(command.verb):
+            await asyncio.sleep(max(0.0, float(self.session.config.input_settle_seconds)))
+        # After any command, re-read and push the authoritative state.
+        await self.push_state()
+
+    async def _execute_chain(
+        self,
+        ws: ServerConnection,
+        command_id: str,
+        commands: list[protocol.Command],
+    ) -> None:
+        before_state = self.session.last_state
+        plan, error = _plan_chain(commands, before_state)
+        results: list[dict] = []
+        successful: list[protocol.Command] = []
+        predicted_after_success: GameState | None = None
+
+        if error is not None:
+            await self._send(ws, protocol.ack_message(command_id, False, error, results=results))
             await self.push_state()
+            return
+
+        assert plan is not None
+        for step in plan:
+            ok, step_error = await asyncio.to_thread(
+                _execute_command,
+                self.session.command_handler,
+                step.command,
+                step.state_hint,
+                False,
+                False,
+            )
+            results.append(_step_result(step.command, ok, step_error))
+            if not ok:
+                break
+            successful.append(step.command)
+            if step.predicted_after is not None:
+                predicted_after_success = step.predicted_after
+
+        if successful and predicted_after_success is not None:
+            _note_prediction(
+                self.session.state_provider,
+                successful,
+                before_state,
+                predicted_after_success,
+            )
+
+        ok = len(results) == len(commands) and all(result["ok"] for result in results)
+        first_error = next((str(result["error"]) for result in results if result.get("error")), None)
+        await self._send(ws, protocol.ack_message(command_id, ok, first_error, results=results))
+        if any(protocol.is_state_altering(command.verb) for command in successful):
+            await asyncio.sleep(max(0.0, float(self.session.config.input_settle_seconds)))
+        await self.push_state()
 
     async def poll_loop(self) -> None:
         """Periodically refresh state so clients see passive changes.
@@ -197,10 +272,22 @@ def build_session(config: HostConfig) -> GameSession:
 
         state_provider = ScreenStateProvider(config)
         log.info("vision state provider active")
-    from tspire.host.input.executor import GamepadCommandHandler
+    backend = str(getattr(config, "input_backend", "") or "").lower()
+    if backend == "mouse":
+        from tspire.host.input.mouse import MouseCommandHandler
 
-    command_handler = GamepadCommandHandler(config, state_provider)
-    log.info("gamepad command handler active")
+        command_handler = MouseCommandHandler(config, state_provider)
+        log.info("mouse command handler active")
+    elif backend == "keyboard":
+        from tspire.host.input.keyboard import KeyboardCommandHandler
+
+        command_handler = KeyboardCommandHandler(config, state_provider)
+        log.info("keyboard (number-key) command handler active")
+    else:
+        from tspire.host.input.executor import GamepadCommandHandler
+
+        command_handler = GamepadCommandHandler(config, state_provider)
+        log.info("%s command handler active", backend or "gamepad")
     return GameSession(config, state_provider=state_provider, command_handler=command_handler)
 
 
@@ -213,6 +300,86 @@ def _missing_host_deps(vision_mode: str) -> list[str]:
     if vision_mode == "cv":
         required.append("pytesseract")
     return [m for m in required if importlib.util.find_spec(m) is None]
+
+
+def _plan_chain(
+    commands: list[protocol.Command],
+    before_state: GameState | None,
+) -> tuple[list[_ChainStep] | None, str | None]:
+    if not commands:
+        return None, "chain needs at least one command"
+    error = _validate_chain_shape(commands)
+    if error:
+        return None, error
+
+    plan: list[_ChainStep] = []
+    state_hint = before_state
+    for i, command in enumerate(commands):
+        is_last = i == len(commands) - 1
+        predicted = predict(state_hint, command) if command.verb in {protocol.Verb.PLAY, protocol.Verb.END} else None
+        if not is_last and predicted is None:
+            return None, f"cannot chain after unpredictable command {command.verb} {' '.join(command.args)}".rstrip()
+        plan.append(_ChainStep(command=command, state_hint=state_hint, predicted_after=predicted))
+        if predicted is not None:
+            state_hint = predicted
+    return plan, None
+
+
+def _validate_chain_shape(commands: list[protocol.Command]) -> str | None:
+    terminal = {protocol.Verb.END, protocol.Verb.PROCEED, protocol.Verb.RETURN}
+    for i, command in enumerate(commands):
+        is_last = i == len(commands) - 1
+        if command.verb in {protocol.Verb.STATE, protocol.Verb.RAW}:
+            return f"'{command.verb}' is not allowed inside a command chain"
+        if command.verb == protocol.Verb.PLAY:
+            continue
+        if command.verb in terminal and is_last:
+            continue
+        if command.verb in terminal:
+            return f"'{command.verb}' must be the last command in a chain"
+        return f"'{command.verb}' is not supported in command chains"
+    return None
+
+
+def _execute_command(
+    handler: CommandHandler,
+    command: protocol.Command,
+    state_hint: GameState | None,
+    verify_state_change: bool,
+    note_action: bool,
+) -> tuple[bool, str | None]:
+    execute = handler.execute
+    params = inspect.signature(execute).parameters
+    kwargs = {}
+    if "verify_state_change" in params:
+        kwargs["verify_state_change"] = verify_state_change
+    if "note_action" in params:
+        kwargs["note_action"] = note_action
+    return execute(command, state_hint, **kwargs)
+
+
+def _step_result(command: protocol.Command, ok: bool, error: str | None) -> dict:
+    return {
+        "verb": command.verb,
+        "args": list(command.args),
+        "ok": ok,
+        "error": error,
+    }
+
+
+def _note_prediction(
+    state_provider: StateProvider,
+    commands: list[protocol.Command],
+    before_state: GameState | None,
+    predicted_state: GameState | None,
+) -> None:
+    note = getattr(state_provider, "note_prediction", None)
+    if note is None:
+        return
+    try:
+        note(commands, before_state, predicted_state)
+    except Exception:
+        log.debug("note_prediction failed", exc_info=True)
 
 
 def main() -> None:

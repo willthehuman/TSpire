@@ -158,13 +158,14 @@ class CvVisionBackend:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 31), np.uint8))
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        roi_h, roi_w = roi.shape[:2]
         bars: list[BBox] = []
         for c in contours:
             x, y, cw, ch = cv2.boundingRect(c)
-            # Within the ground-line band, HP bars are the wide, thin, horizontal strips.
-            # Width floor + height window + aspect reject background-red blobs.
-            if cw < 0.14 * roi_w or not (0.04 * roi_h <= ch <= 0.22 * roi_h):
+            # HP bars are wide, THIN (~20px), horizontal strips on the ground line. Size
+            # floors are relative to the whole FRAME (not the search region) so a wider
+            # monster_search doesn't drop smaller enemies' shorter bars. The thin max-height
+            # rejects block/status blobs that morphology-merge into a fat red region.
+            if cw < 0.045 * w or not (0.010 * h <= ch <= 0.035 * h):
                 continue
             if cw / max(ch, 1) < 5.0:
                 continue

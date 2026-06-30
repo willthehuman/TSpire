@@ -55,6 +55,16 @@ class ScreenStateProvider:
         self._state_tracker().note_action(command, before_state)
         self._sync_legacy_state()
 
+    def note_prediction(
+        self,
+        commands: list[protocol.Command],
+        before_state: GameState | None,
+        predicted_state: GameState | None,
+    ) -> None:
+        """Record a precomputed multi-command prediction for the next combat read."""
+        self._state_tracker().note_prediction(commands, before_state, predicted_state)
+        self._sync_legacy_state()
+
     def clear_pending_action(self) -> None:
         self._state_tracker().clear_pending()
         self._sync_legacy_state()
@@ -86,6 +96,7 @@ class ScreenStateProvider:
                 url=self.config.ollama_url,
                 regions=self.regions,
                 image_width=self.config.llm_image_width,
+                think=self.config.ollama_think,
             )
         return self._llm
 
@@ -122,7 +133,10 @@ class ScreenStateProvider:
         if self.config.vision_mode == "llm":
             # Only pay for a block-reading call when a block badge is actually visible.
             read_block = backend.region_filled(frame, self.regions.player_block)
-            result = self._get_llm().parse_combat(frame, read_block=read_block)
+            # Read fixed HUD numbers with local OCR (fast) instead of one model call each;
+            # the parser falls back to the model per field if OCR yields nothing.
+            ocr = backend if getattr(self.config, "ocr_hud_numbers", True) else None
+            result = self._get_llm().parse_combat(frame, read_block=read_block, ocr=ocr)
         else:
             from tspire.host.vision.combat import parse_combat
 

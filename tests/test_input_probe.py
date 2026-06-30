@@ -10,7 +10,7 @@ from tspire.host.input_probe import (
 
 
 def test_parse_sequence_normalizes_aliases():
-    assert parse_sequence("a, ls_left right end-turn") == ["select", "left", "right", "proceed"]
+    assert parse_sequence("a, ls_left right end-turn") == ["select", "left", "right", "end_turn"]
 
 
 def test_parse_sequence_rejects_unknown_token():

@@ -57,10 +57,19 @@ class WindowCapture:
         self._activate(w)
         return self._rect_of(w)
 
-    def ensure_foreground(self) -> bool:
+    def client_rect(self) -> WindowRect:
+        """The game's client area (no title bar/borders) in absolute screen coords.
+
+        Frames from :meth:`grab` are captured at exactly this rectangle, so a pixel
+        ``(x, y)`` in a grabbed frame maps to screen ``(left + x, top + y)``. Used by the
+        mouse input backend to convert detected card/monster boxes into click targets.
+        """
+        return self._client_rect(self._find_window())
+
+    def ensure_foreground(self, *, click_safe_zone: bool = True) -> bool:
         """Bring the game window to the foreground; return whether it actually became it.
 
-        When the window successfully becomes foreground, a safe-zone click is sent
+        When the window successfully becomes foreground, a safe-zone click can be sent
         to force Windows to fully transfer input ownership. Without a real input
         event, libGDX games (StS included) may ignore virtual gamepad input even
         though GetForegroundWindow() returns the game's hwnd.
@@ -71,14 +80,14 @@ class WindowCapture:
             return False
         if self.is_foreground(w) and not getattr(w, "isMinimized", False):
             hwnd = getattr(w, "_hWnd", None)
-            if hwnd:
+            if hwnd and click_safe_zone:
                 self._click_safe_zone(hwnd)
             return True
         self._activate(w)
         if not self.is_foreground(w):
             return False
         hwnd = getattr(w, "_hWnd", None)
-        if hwnd:
+        if hwnd and click_safe_zone:
             self._click_safe_zone(hwnd)
         return True
 

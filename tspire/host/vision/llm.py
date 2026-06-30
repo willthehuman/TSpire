@@ -184,28 +184,39 @@ class OllamaError(RuntimeError):
 
 
 class OllamaVisionParser:
-    def __init__(self, model: str, url: str, regions: RegionMap, image_width: int = 1024) -> None:
+    def __init__(
+        self,
+        model: str,
+        url: str,
+        regions: RegionMap,
+        image_width: int = 1024,
+        *,
+        think: bool = False,
+    ) -> None:
         self.model = model
         self.url = url.rstrip("/")
         self.regions = regions
         self.image_width = image_width
+        self.think = bool(think)
 
     # --- public ----------------------------------------------------------
-    def parse_combat(self, frame, *, read_block: bool = False) -> ParseResult:
-        """Parse the combat frame. `read_block` triggers an extra block-reading call;
-        the caller sets it only when a block badge is detected (it is usually absent),
-        keeping the common case to two model calls."""
+    def parse_combat(self, frame, *, read_block: bool = False, ocr=None) -> ParseResult:
+        """Parse the combat frame.
+
+        The busy scene (monsters + hand) always goes to the model. The fixed HUD numbers
+        (energy, HP, block, gold, floor, deck) are read with local OCR first when an ``ocr``
+        backend is supplied, falling back to a per-field model call only when OCR yields
+        nothing -- collapsing the common case from ~6 model calls to one. ``read_block``
+        triggers a block read only when a block badge was detected (usually absent)."""
         scene = self._scene(frame)
-        energy, energy_max = self._pair(frame, self.regions.energy, _ENERGY_PROMPT)
-        hp, hp_max = self._pair(frame, self.regions.player_hp, _HP_PROMPT)
+        energy, energy_max = self._read_pair(ocr, frame, self.regions.energy, _ENERGY_PROMPT)
+        hp, hp_max = self._read_pair(ocr, frame, self.regions.player_hp, _HP_PROMPT)
         scene_energy = _intish(scene.get("energy", 0), 0)
         scene_hp = _intish(scene.get("current_hp", scene.get("hp", 0)), 0)
         scene_hp_max = _intish(scene.get("max_hp", 0), 0)
-        gold, gold_seen = self._value(frame, self.regions.gold, _GOLD_PROMPT, allow_zero=False)
-        floor, floor_seen = self._value(frame, self.regions.floor, _FLOOR_PROMPT, allow_zero=False)
-        deck_count, deck_seen = self._value(
-            frame, self.regions.deck_count, _DECK_PROMPT, allow_zero=False
-        )
+        gold, gold_seen = self._read_value(ocr, frame, self.regions.gold, _GOLD_PROMPT)
+        floor, floor_seen = self._read_value(ocr, frame, self.regions.floor, _FLOOR_PROMPT)
+        deck_count, deck_seen = self._read_value(ocr, frame, self.regions.deck_count, _DECK_PROMPT)
         if energy_max <= 0 and "energy" in scene:
             energy = scene_energy
         if hp <= 0 and hp_max <= 0 and scene_hp > 0:
@@ -213,8 +224,8 @@ class OllamaVisionParser:
         if hp_max <= 0 and scene_hp_max > 0:
             hp_max = scene_hp_max
         if hp_max <= 0:
-            hp, hp_max = self._pair(frame, self.regions.top_hp, _HP_PROMPT)
-        block = self._block(frame) if read_block else 0
+            hp, hp_max = self._read_pair(ocr, frame, self.regions.top_hp, _HP_PROMPT)
+        block = self._read_block(ocr, frame) if read_block else 0
 
         player = PlayerCombat(
             current_hp=hp,
@@ -276,6 +287,27 @@ class OllamaVisionParser:
 
     def reread_energy(self, frame) -> tuple[int, int]:
         return self._pair(frame, self.regions.energy, _ENERGY_PROMPT)
+
+    # --- OCR-first HUD reads ---------------------------------------------
+    # Try local OCR for a fixed-region number; fall back to the (slow) model crop only when
+    # OCR is unavailable or returns nothing. Keeps the fast path off the model entirely.
+    def _read_pair(self, ocr, frame, rect: Rect, prompt: str) -> tuple[int, int]:
+        pair = _ocr_pair(ocr, frame, rect)
+        if pair is not None:
+            return pair
+        return self._pair(frame, rect, prompt)
+
+    def _read_value(self, ocr, frame, rect: Rect, prompt: str) -> tuple[int, bool]:
+        value = _ocr_int(ocr, frame, rect)
+        if value is not None and value > 0:
+            return value, True
+        return self._value(frame, rect, prompt, allow_zero=False)
+
+    def _read_block(self, ocr, frame) -> int:
+        value = _ocr_int(ocr, frame, self.regions.player_block)
+        if value is not None:
+            return max(0, value)
+        return self._block(frame)
 
     # --- calls ------------------------------------------------------------
     def _scene(self, frame) -> dict:
@@ -345,6 +377,7 @@ class OllamaVisionParser:
             "images": images,
             "stream": False,
             "format": schema,
+            "think": self.think,
             "keep_alive": "10m",
             "options": {"temperature": 0},
         }
@@ -443,6 +476,32 @@ class OllamaVisionParser:
                 continue
             powers.append(Power(power_id=name, name=name, amount=amount))
         return powers
+
+
+def _ocr_pair(ocr, frame, rect: Rect) -> tuple[int, int] | None:
+    """Read a 'current/max' field via local OCR. None when unavailable or unreadable."""
+    if ocr is None:
+        return None
+    try:
+        current, maximum = ocr.ocr_int_pair(frame, rect)
+    except Exception:
+        log.debug("OCR pair read failed; falling back to model", exc_info=True)
+        return None
+    if maximum > 0 or current > 0:
+        return current, maximum
+    return None
+
+
+def _ocr_int(ocr, frame, rect: Rect) -> int | None:
+    """Read a single number via local OCR. None when unavailable or unreadable."""
+    if ocr is None:
+        return None
+    try:
+        value = ocr.ocr_int(frame, rect, default=-1)
+    except Exception:
+        log.debug("OCR int read failed; falling back to model", exc_info=True)
+        return None
+    return value if value >= 0 else None
 
 
 def _loads_json_object(text: str) -> dict:

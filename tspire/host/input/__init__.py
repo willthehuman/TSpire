@@ -1,4 +1,4 @@
-"""Host-side gamepad input executor for M3."""
+"""Host-side input executor for M3."""
 
 from tspire.host.input.driver import (
     CANONICAL_TOKENS,
@@ -7,6 +7,7 @@ from tspire.host.input.driver import (
     GamepadDriver,
     InputTiming,
     InputUnavailable,
+    KeyboardDriver,
     VGamepadDriver,
     build_driver,
     normalize_token,
@@ -24,6 +25,7 @@ __all__ = [
     "GamepadDriver",
     "InputTiming",
     "InputUnavailable",
+    "KeyboardDriver",
     "NullFocusObserver",
     "ScreenFocusObserver",
     "VGamepadDriver",

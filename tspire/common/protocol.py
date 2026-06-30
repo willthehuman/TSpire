@@ -3,6 +3,7 @@
 Two message directions, both JSON over a WebSocket text frame:
 
   client -> host : {"type": "command", "verb": "...", "args": [...], "id": "..."}
+                   {"type": "chain", "commands": [{"verb": "...", "args": [...]}], "id": "..."}
   host -> client : {"type": "state",  "state": {...GameState...}}
                    {"type": "ack",    "id": "...", "ok": true, "error": null}
                    {"type": "log",    "level": "info", "message": "..."}
@@ -70,16 +71,36 @@ class Command:
     args: list[str] = field(default_factory=list)
     id: str = ""  # client-generated; echoed in the matching ack
 
+    def to_dict(self) -> dict[str, Any]:
+        return {"verb": self.verb, "args": self.args}
+
     def to_message(self) -> str:
         return json.dumps({"type": "command", "verb": self.verb, "args": self.args, "id": self.id})
+
+
+def chain_message(command_id: str, commands: list[Command]) -> str:
+    return json.dumps({
+        "type": "chain",
+        "id": command_id,
+        "commands": [command.to_dict() for command in commands],
+    })
 
 
 def state_message(state: GameState) -> str:
     return json.dumps({"type": "state", "state": state.to_dict()})
 
 
-def ack_message(command_id: str, ok: bool, error: str | None = None) -> str:
-    return json.dumps({"type": "ack", "id": command_id, "ok": ok, "error": error})
+def ack_message(
+    command_id: str,
+    ok: bool,
+    error: str | None = None,
+    *,
+    results: list[dict[str, Any]] | None = None,
+) -> str:
+    message: dict[str, Any] = {"type": "ack", "id": command_id, "ok": ok, "error": error}
+    if results is not None:
+        message["results"] = results
+    return json.dumps(message)
 
 
 def log_message(message: str, level: str = "info") -> str:
@@ -103,3 +124,18 @@ def command_from_message(data: dict[str, Any]) -> Command:
         args=[str(a) for a in data.get("args", [])],
         id=str(data.get("id", "")),
     )
+
+
+def commands_from_message(data: dict[str, Any]) -> list[Command]:
+    commands = data.get("commands", [])
+    if not isinstance(commands, list):
+        raise ValueError("chain message 'commands' must be a list")
+    out: list[Command] = []
+    for item in commands:
+        if not isinstance(item, dict):
+            raise ValueError("chain command entries must be objects")
+        out.append(Command(
+            verb=str(item.get("verb", "")),
+            args=[str(a) for a in item.get("args", [])],
+        ))
+    return out
