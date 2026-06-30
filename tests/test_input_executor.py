@@ -131,10 +131,14 @@ def test_play_in_dry_run_records_hand_and_target_sequence():
     ]
 
 
-def test_play_without_state_change_fails_and_cancels():
+def test_play_without_target_detects_target_mode_and_cancels():
     state = _combat(hand=1, monsters=1)
     driver = FakeDriver()
-    observer = FakeObserver([FocusState(hand_index=0)])
+    observer = FakeObserver([
+        FocusState(hand_index=0),
+        FocusState(hand_index=0),
+        FocusState(target_index=0),
+    ])
     handler = GamepadCommandHandler(
         _cfg(),
         FakeStateProvider([state, state, state]),
@@ -147,7 +151,7 @@ def test_play_without_state_change_fails_and_cancels():
     assert driver.presses[-1] == "cancel"
 
 
-def test_play_with_observed_target_succeeds_after_state_change():
+def test_play_with_observed_target_succeeds_without_waiting_for_state_change():
     before = _combat(hand=2, monsters=2, energy=3)
     after = _combat(hand=1, monsters=2, energy=2)
     driver = FakeDriver()
@@ -175,6 +179,51 @@ def test_play_with_observed_target_succeeds_after_state_change():
     assert driver.presses[0] == "down"
     assert driver.presses[-1] == "select"
     assert "right" in driver.presses
+
+
+def test_play_uses_cached_state_hint_without_full_state_read():
+    state = _combat(hand=2, monsters=1)
+    provider = FakeStateProvider([GameState(screen_type=ScreenType.MAP)])
+    driver = FakeDriver()
+    observer = FakeObserver([FocusState(hand_index=0), FocusState(hand_index=0)])
+    handler = GamepadCommandHandler(
+        _cfg(),
+        provider,
+        driver=driver,
+        observer=observer,
+    )
+
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["0", "0"]), state_hint=state)
+
+    assert ok and error is None
+    assert provider.reads == 0
+    assert driver.presses == ["down", "select", "select"]
+
+
+def test_input_aborts_when_foregrounding_fails():
+    class Capture:
+        def find_window(self):
+            return object()
+
+        def ensure_foreground(self):
+            return False
+
+    class Provider(FakeStateProvider):
+        capture = Capture()
+
+    driver = FakeDriver()
+    handler = GamepadCommandHandler(
+        _cfg(),
+        Provider([_combat()]),
+        driver=driver,
+        observer=FakeObserver([FocusState(hand_index=0)]),
+    )
+
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["0"]))
+
+    assert not ok
+    assert "foreground" in error
+    assert driver.presses == []
 
 
 def test_end_turn_requires_combat_state_change():

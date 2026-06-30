@@ -52,6 +52,13 @@ class HostConfig:
     # (LLM) providers, which only read on connect / after commands / on a state request.
     poll_interval: float = 0.5
 
+    # Predicted-state reconciliation: after a play/end-turn, estimate the next combat state
+    # from game rules and use it to correct implausible vision reads. predict_arbiter lets a
+    # hard conflict be broken by re-reading the region with the LLM (needs Ollama). Set
+    # predict_enabled false to push raw vision reads (the pre-prediction behavior).
+    predict_enabled: bool = True
+    predict_arbiter: bool = True
+
     # If true, the input executor logs button sequences instead of sending them.
     input_dry_run: bool = False
     # If true, the RAW protocol command accepts low-level input tokens.
@@ -96,6 +103,10 @@ class HostConfig:
             self.ollama_model = env["TSPIRE_OLLAMA_MODEL"]
         if "TSPIRE_LLM_IMAGE_WIDTH" in env:
             self.llm_image_width = int(env["TSPIRE_LLM_IMAGE_WIDTH"])
+        if "TSPIRE_PREDICT_ENABLED" in env:
+            self.predict_enabled = env["TSPIRE_PREDICT_ENABLED"].lower() in {"1", "true", "yes"}
+        if "TSPIRE_PREDICT_ARBITER" in env:
+            self.predict_arbiter = env["TSPIRE_PREDICT_ARBITER"].lower() in {"1", "true", "yes"}
         if "TSPIRE_INPUT_DRY_RUN" in env:
             self.input_dry_run = env["TSPIRE_INPUT_DRY_RUN"].lower() in {"1", "true", "yes"}
         if "TSPIRE_INPUT_RAW" in env:

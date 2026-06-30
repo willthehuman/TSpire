@@ -325,3 +325,25 @@ def _window_rank(window) -> tuple[int, int, int]:
     minimized = 1 if getattr(window, "isMinimized", False) else 0
     area = max(window.width, 0) * max(window.height, 0)
     return exact, minimized, -area
+
+
+def normalize_frame_to_client(frame, target_width: int, target_height: int, *, report=None):
+    """Crop a near-client frame that still includes a window title bar/borders."""
+    h, w = frame.shape[:2]
+    if (w, h) == (target_width, target_height):
+        return frame
+
+    extra_w = w - target_width
+    extra_h = h - target_height
+    max_extra_w = max(16, round(target_width * 0.03))
+    max_extra_h = max(48, round(target_height * 0.08))
+    if 0 <= extra_w <= max_extra_w and 0 <= extra_h <= max_extra_h:
+        left = extra_w // 2
+        top = extra_h
+        if report is not None:
+            report(
+                f"cropped framed image from {w}x{h} to {target_width}x{target_height} "
+                f"at x={left}, y={top}"
+            )
+        return frame[top : top + target_height, left : left + target_width]
+    return frame

@@ -54,8 +54,21 @@ def test_pair_values_accepts_hp_string():
 def test_parse_combat_assembles_state_without_network(monkeypatch):
     parser = _parser()
     monkeypatch.setattr(parser, "_scene", lambda frame: {
+        "gold": 99,
+        "floor": 1,
+        "deck_count": 10,
+        "draw_pile_count": 5,
+        "discard_pile_count": 0,
+        "player_powers": [{"name": "Vulnerable", "amount": 2}],
         "monsters": [
-            {"name": "Jaw Worm", "current_hp": 40, "max_hp": 44, "intent": "attack", "intent_value": 11},
+            {
+                "name": "Jaw Worm",
+                "current_hp": 40,
+                "max_hp": 44,
+                "intent": "attack",
+                "intent_value": 11,
+                "powers": [{"name": "Strength", "amount": 3}],
+            },
             {"name": "None", "current_hp": 10, "max_hp": 10, "intent": "defend"},
         ],
         "hand": [{"name": "Strike", "cost": 1}, {"name": "Defend", "cost": 1}],
@@ -69,8 +82,60 @@ def test_parse_combat_assembles_state_without_network(monkeypatch):
     assert (p.energy, p.current_hp, p.max_hp, p.block) == (3, 68, 80, 5)
     assert [m.intent for m in result.combat.monsters] == [Intent.ATTACK, Intent.DEFEND]
     assert result.combat.monsters[0].intent_damage == 11
+    assert result.combat.monsters[0].powers[0].name == "Strength"
     assert [c.name for c in result.combat.hand] == ["Strike", "Defend"]
+    assert [po.name for po in p.powers] == ["Vulnerable"]
+    assert (result.combat.draw_pile_count, result.combat.discard_pile_count) == (5, 0)
+    assert (result.gold, result.floor, result.deck_count) == (99, 1, 10)
     assert result.confidence == 1.0
+
+
+def test_parse_combat_preserves_zero_energy(monkeypatch):
+    parser = _parser()
+    monkeypatch.setattr(parser, "_scene", lambda frame: {"monsters": [], "hand": []})
+    monkeypatch.setattr(parser, "_pair",
+                        lambda frame, rect, prompt: (0, 3) if prompt is _ENERGY_PROMPT else (80, 80))
+
+    result = parser.parse_combat(object())
+
+    assert result.combat.player.energy == 0
+
+
+def test_parse_combat_uses_scene_stats_when_fixed_crops_fail(monkeypatch):
+    parser = _parser()
+    monkeypatch.setattr(parser, "_scene", lambda frame: {
+        "gold": 99,
+        "floor": 1,
+        "deck_count": 10,
+        "current_hp": 80,
+        "max_hp": 80,
+        "energy": 3,
+        "monsters": [],
+        "hand": [],
+    })
+    monkeypatch.setattr(parser, "_pair", lambda frame, rect, prompt: (0, 0))
+
+    result = parser.parse_combat(object())
+
+    p = result.combat.player
+    assert (p.current_hp, p.max_hp, p.energy) == (80, 80, 3)
+    assert (result.gold, result.floor, result.deck_count) == (99, 1, 10)
+
+
+def test_parse_combat_uses_top_hp_when_combat_hp_and_scene_fail(monkeypatch):
+    parser = _parser()
+    monkeypatch.setattr(parser, "_scene", lambda frame: {"monsters": [], "hand": []})
+
+    def _pair(frame, rect, prompt):
+        if rect == parser.regions.top_hp:
+            return 80, 80
+        return 0, 0
+
+    monkeypatch.setattr(parser, "_pair", _pair)
+
+    result = parser.parse_combat(object())
+
+    assert (result.combat.player.current_hp, result.combat.player.max_hp) == (80, 80)
 
 
 def test_parse_combat_skips_block_call_when_not_requested(monkeypatch):

@@ -62,12 +62,13 @@ def _top_bar(state: GameState) -> Panel:
     t.add_row("HP", player_hp)
     t.add_row("Gold", Text(str(state.gold), style="yellow"))
     if cs is not None:
+        t.add_row("Deck", Text(str(state.deck_count), style="cyan") if state.deck_count else Text("?", style="dim"))
+    if cs is not None:
         energy = cs.player.energy
         t.add_row("Energy", Text(str(energy), style="bold cyan"))
         if cs.player.block:
             t.add_row("Block", Text(str(cs.player.block), style="bold blue"))
-        if cs.draw_pile_count or cs.discard_pile_count:
-            t.add_row("Piles", Text(f"draw {cs.draw_pile_count}  discard {cs.discard_pile_count}", style="dim"))
+        t.add_row("Piles", Text(f"draw {cs.draw_pile_count}  discard {cs.discard_pile_count}", style="dim"))
     meta = Text.assemble(
         ("FLOOR ", "dim"), (str(state.floor) or "?", "bold"),
         ("   ACT ", "dim"), (str(state.act) or "?", "bold"),
@@ -203,6 +204,8 @@ def render_state(state: GameState):
     info.add_row("Screen", Text(state.screen_type.value, style="bold yellow"))
     info.add_row("HP", _hp_text(state.current_hp, state.max_hp))
     info.add_row("Gold", Text(str(state.gold), style="yellow"))
+    if state.deck_count:
+        info.add_row("Deck", Text(str(state.deck_count), style="cyan"))
     info.add_row("Commands", Text(cmds, style="cyan"))
     body = [Panel(info, title="Slay the Spire", border_style="blue")]
     if state.screen_message:

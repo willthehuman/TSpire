@@ -38,6 +38,14 @@ class Verb:
     RAW = "raw"  # raw passthrough: args are low-level gamepad tokens (debug)
 
 
+_READ_ONLY_VERBS = {Verb.STATE}
+
+
+def is_state_altering(verb: str) -> bool:
+    """True when a command may change the visible game state."""
+    return verb not in _READ_ONLY_VERBS
+
+
 # Verbs valid on each screen. The host fills GameState.available_commands from this so
 # the client can disable impossible actions. STATE is always allowed (read-only).
 COMMANDS_BY_SCREEN: dict[str, list[str]] = {

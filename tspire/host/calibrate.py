@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from tspire.host.capture import normalize_frame_to_client
 from tspire.host.config import HostConfig
 from tspire.host.vision import region_map_for
 
@@ -27,13 +28,25 @@ def _load_frame(args, config: HostConfig):
         frame = cv2.imread(args.image)
         if frame is None:
             raise SystemExit(f"could not read image: {args.image}")
-        return frame
+        return _normalize_image_frame(frame, config)
     from tspire.host.capture import WindowCapture
 
     return WindowCapture(
         config.window_title,
         focus_before_capture=config.focus_before_capture,
     ).grab()
+
+
+def _normalize_image_frame(frame, config: HostConfig, *, report=print):
+    """Crop near-client screenshots that still include a window frame."""
+    normalized = normalize_frame_to_client(frame, int(config.width), int(config.height), report=report)
+    if normalized is frame and frame.shape[:2] != (int(config.height), int(config.width)):
+        h, w = frame.shape[:2]
+        report(
+            f"warning: image is {w}x{h}; expected {config.width}x{config.height}; "
+            "using image dimensions for regions"
+        )
+    return normalized
 
 
 def main() -> None:

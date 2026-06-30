@@ -22,6 +22,7 @@ def _sample_state() -> GameState:
         current_hp=68,
         max_hp=80,
         gold=99,
+        deck_count=10,
         combat_state=CombatState(
             player=PlayerCombat(
                 current_hp=68,
@@ -94,6 +95,12 @@ def test_state_message_is_parseable():
     data = protocol.parse_message(msg)
     assert data["type"] == "state"
     GameState.from_dict(data["state"])  # should not raise
+
+
+def test_protocol_marks_state_command_read_only():
+    assert not protocol.is_state_altering(protocol.Verb.STATE)
+    for verb in (protocol.Verb.PLAY, protocol.Verb.END, protocol.Verb.PROCEED, protocol.Verb.RAW):
+        assert protocol.is_state_altering(verb)
 
 
 def test_intent_is_attack_helper():

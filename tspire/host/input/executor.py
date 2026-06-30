@@ -66,16 +66,24 @@ class GamepadCommandHandler:
             level = logging.INFO if self.driver.available else logging.WARNING
             log.log(level, "input driver: %s", self.driver.diagnostic)
 
-    def execute(self, command: protocol.Command) -> tuple[bool, str | None]:
+    def execute(
+        self,
+        command: protocol.Command,
+        state_hint: GameState | None = None,
+    ) -> tuple[bool, str | None]:
         try:
-            return self._execute(command)
+            return self._execute(command, state_hint)
         except (CommandError, ValueError, InputUnavailable) as exc:
             return False, str(exc)
         except Exception:
             log.exception("input command failed")
             return False, "input command failed (see host log)"
 
-    def _execute(self, command: protocol.Command) -> tuple[bool, str | None]:
+    def _execute(
+        self,
+        command: protocol.Command,
+        state_hint: GameState | None = None,
+    ) -> tuple[bool, str | None]:
         if command.verb == protocol.Verb.STATE:
             return True, None
         if not self.driver.available:
@@ -83,7 +91,8 @@ class GamepadCommandHandler:
         # StS only reads the virtual pad while it is the foreground window. _play/_end_turn
         # foreground it as a side-effect of reading state, but RAW does not; do it here so
         # every input-producing verb is foregrounded before any button is pressed.
-        self._ensure_foreground()
+        if not self._ensure_foreground():
+            return False, "could not bring Slay the Spire to the foreground"
         if command.verb == protocol.Verb.POTION:
             return False, "potion execution is deferred until potion focus/tooltips are reliable"
         if command.verb == protocol.Verb.RAW:
@@ -95,10 +104,27 @@ class GamepadCommandHandler:
             self._press("cancel")
             return True, None
         if command.verb == protocol.Verb.END:
-            return self._end_turn()
+            ok, error = self._end_turn()
+            if ok:
+                self._note_action(command, state_hint)
+            return ok, error
         if command.verb == protocol.Verb.PLAY:
-            return self._play(command.args)
+            ok, error = self._play(command.args, state_hint)
+            if ok:
+                self._note_action(command, state_hint)
+            return ok, error
         return False, f"unsupported command {command.verb!r}"
+
+    def _note_action(self, command: protocol.Command, before: GameState | None) -> None:
+        """Hand the executed action + pre-action state to the provider so its next read can
+        predict-and-reconcile. Optional on the provider; guarded for stub/fake providers."""
+        note = getattr(self.state_provider, "note_action", None)
+        if note is None:
+            return
+        try:
+            note(command, before)
+        except Exception:
+            log.debug("note_action failed", exc_info=True)
 
     def _raw(self, args: list[str]) -> tuple[bool, str | None]:
         if not self.config.input_raw_enabled:
@@ -118,8 +144,12 @@ class GamepadCommandHandler:
             return False, "end turn input sent, but no combat state change was observed"
         return True, None
 
-    def _play(self, args: list[str]) -> tuple[bool, str | None]:
-        before = self._require_combat()
+    def _play(
+        self,
+        args: list[str],
+        state_hint: GameState | None = None,
+    ) -> tuple[bool, str | None]:
+        before = self._require_combat(state_hint)
         combat = before.combat_state
         assert combat is not None  # for type checkers; _require_combat guarantees it.
         card_index = _int_arg(args, 0, "card")
@@ -129,7 +159,6 @@ class GamepadCommandHandler:
         if target_index is not None and not _has_monster_index(combat.monsters, target_index):
             return False, f"target index {target_index} is out of range"
 
-        before_sig = _state_signature(before)
         if not self._focus_hand_card(card_index, len(combat.hand)):
             return False, f"could not verify focus on hand card {card_index}"
         self._press("select")
@@ -139,16 +168,15 @@ class GamepadCommandHandler:
                 self._press("cancel")
                 return False, f"could not verify focus on target {target_index}"
             self._press("select")
+            return True, None
 
-        if not self._wait_for_change(before_sig):
+        if self._target_focus_appeared(len(combat.monsters)):
             self._press("cancel")
-            if target_index is None:
-                return False, "card did not resolve; provide a target index if it requires one"
-            return False, "play input sent, but no combat state change was observed"
+            return False, "card did not resolve; provide a target index if it requires one"
         return True, None
 
-    def _require_combat(self) -> GameState:
-        state = self._read_state()
+    def _require_combat(self, state_hint: GameState | None = None) -> GameState:
+        state = state_hint if _is_combat_state(state_hint) else self._read_state()
         if state.screen_type != ScreenType.COMBAT or state.combat_state is None:
             raise CommandError(f"combat input is only available on COMBAT, got {state.screen_type.value}")
         return state
@@ -259,6 +287,23 @@ class GamepadCommandHandler:
             self._sleep(self.timing.settle_seconds)
         return False
 
+    def _target_focus_appeared(self, target_count: int) -> bool:
+        """Briefly detect whether selecting a card opened target selection."""
+        if self._verification_bypassed or target_count <= 0:
+            return False
+        self._observe_target_count = target_count
+        probe_seconds = min(
+            self.timing.command_timeout,
+            max(0.15, self.timing.settle_seconds * 2),
+        )
+        deadline = time.monotonic() + probe_seconds
+        step = self.timing.settle_seconds if self.timing.settle_seconds > 0 else 0.01
+        while time.monotonic() <= deadline:
+            if self._observe().target_index is not None:
+                return True
+            self._sleep(min(step, 0.05))
+        return False
+
     def _wait_for_change(self, before_sig: str) -> bool:
         if self._verification_bypassed:
             return True
@@ -331,6 +376,10 @@ def _monster_alive(monster: Monster) -> bool:
     if monster.is_gone or monster.half_dead:
         return False
     return monster.max_hp > 0 or monster.current_hp > 0
+
+
+def _is_combat_state(state: GameState | None) -> bool:
+    return state is not None and state.screen_type == ScreenType.COMBAT and state.combat_state is not None
 
 
 def _hand_steps(current: int, target: int, hand_count: int) -> int:

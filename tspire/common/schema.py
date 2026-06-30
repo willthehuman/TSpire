@@ -177,6 +177,7 @@ class GameState:
     current_hp: int = 0
     max_hp: int = 0
     gold: int = 0
+    deck_count: int = 0
     relics: list[Relic] = field(default_factory=list)
     potions: list[Potion] = field(default_factory=list)
     combat_state: CombatState | None = None

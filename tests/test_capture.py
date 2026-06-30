@@ -1,4 +1,14 @@
-from tspire.host.capture import WindowCapture, WindowRect, _title_matches, _window_rank
+import numpy as np
+
+from tspire.host.calibrate import _normalize_image_frame
+from tspire.host.capture import (
+    WindowCapture,
+    WindowRect,
+    normalize_frame_to_client,
+    _title_matches,
+    _window_rank,
+)
+from tspire.host.config import HostConfig
 
 
 class _Window:
@@ -63,3 +73,45 @@ def test_ensure_foreground_early_out():
     assert find_called
     assert is_fg_called
     assert not activate_called
+
+
+def test_normalize_image_frame_crops_framed_screenshot():
+    frame = np.zeros((1107, 1922, 3), dtype=np.uint8)
+    frame[27, 1] = (1, 2, 3)
+    messages = []
+
+    out = _normalize_image_frame(frame, HostConfig(width=1920, height=1080), report=messages.append)
+
+    assert out.shape[:2] == (1080, 1920)
+    assert tuple(out[0, 0]) == (1, 2, 3)
+    assert "cropped framed image" in messages[0]
+
+
+def test_normalize_frame_to_client_crops_like_live_capture():
+    frame = np.zeros((1107, 1922, 3), dtype=np.uint8)
+    frame[27, 1] = (4, 5, 6)
+
+    out = normalize_frame_to_client(frame, 1920, 1080)
+
+    assert out.shape[:2] == (1080, 1920)
+    assert tuple(out[0, 0]) == (4, 5, 6)
+
+
+def test_normalize_image_frame_keeps_exact_client_screenshot():
+    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    messages = []
+
+    out = _normalize_image_frame(frame, HostConfig(width=1920, height=1080), report=messages.append)
+
+    assert out is frame
+    assert messages == []
+
+
+def test_normalize_image_frame_warns_on_non_matching_size():
+    frame = np.zeros((900, 1600, 3), dtype=np.uint8)
+    messages = []
+
+    out = _normalize_image_frame(frame, HostConfig(width=1920, height=1080), report=messages.append)
+
+    assert out is frame
+    assert "warning: image is 1600x900" in messages[0]

@@ -98,7 +98,7 @@ def _render(state: GameState) -> str:
 
 def test_combat_panel_mentions_key_fields():
     out = _render(ts._sample_state())
-    for needle in ["Strike", "Defend", "Jaw Worm", "Attack", "FLOOR", "[ATK]"]:
+    for needle in ["Strike", "Defend", "Jaw Worm", "Attack", "FLOOR", "Deck", "Piles", "discard 0", "[ATK]"]:
         assert needle in out, f"missing {needle!r}"
 
 
@@ -121,19 +121,30 @@ def test_render_state_non_combat():
 
 # --- Textual app wiring ----------------------------------------------------
 class _FakeConn:
-    """A fake HostConnection that yields one canned state then idles."""
+    """A fake HostConnection backed by a queue of incoming frames."""
 
-    def __init__(self, frame: dict) -> None:
-        self.frame = frame
+    def __init__(self, *frames: dict) -> None:
+        self.frames = asyncio.Queue()
+        for frame in frames:
+            self.frames.put_nowait(frame)
         self.sent: list[tuple[str, list[str]]] = []
+        self.sent_ids: list[str] = []
+        self._next_id = 1
         self._ws = True  # truthy so action_refresh sends
 
     async def send_command(self, verb, args=None):
+        command_id = str(self._next_id)
+        self._next_id += 1
         self.sent.append((verb, args or []))
+        self.sent_ids.append(command_id)
+        return command_id
 
     async def messages(self):
-        yield self.frame
-        await asyncio.sleep(0.2)  # then stay quiet so the test can end
+        while True:
+            yield await self.frames.get()
+
+    async def push(self, frame: dict) -> None:
+        await self.frames.put(frame)
 
 
 @pytest.mark.asyncio
@@ -167,3 +178,168 @@ async def test_app_sends_command_on_submit():
         cmd.value = "p 0 0"
         await pilot.press("enter")
         assert ("play", ["0", "0"]) in conn.sent
+
+
+def _plain(widget) -> str:
+    renderable = widget.render()
+    return getattr(renderable, "plain", str(renderable))
+
+
+@pytest.mark.asyncio
+async def test_app_disables_input_until_success_ack_is_followed_by_state():
+    from tspire.client.app import TSpireApp
+
+    state = ts._sample_state()
+    frame = {"type": "state", "state": state.to_dict()}
+    conn = _FakeConn(frame)
+    app = TSpireApp(connection=conn)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        cmd = app.query_one("#cmd")
+        cmd.value = "p 0 0"
+        await pilot.press("enter")
+
+        command_id = conn.sent_ids[-1]
+        assert app._pending_command_id == command_id
+        assert cmd.disabled
+        assert "running play 0 0" in _plain(app.query_one("#status"))
+
+        await conn.push({"type": "ack", "id": command_id, "ok": True})
+        await pilot.pause()
+        assert app._pending_command_id == command_id
+        assert cmd.disabled
+        assert "refreshing state" in _plain(app.query_one("#status"))
+
+        await conn.push({"type": "state", "state": state.to_dict()})
+        await pilot.pause()
+        assert app._pending_command_id is None
+        assert not cmd.disabled
+
+
+@pytest.mark.asyncio
+async def test_app_clears_pending_on_failed_ack():
+    from tspire.client.app import TSpireApp
+
+    state = ts._sample_state()
+    conn = _FakeConn({"type": "state", "state": state.to_dict()})
+    app = TSpireApp(connection=conn)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        cmd = app.query_one("#cmd")
+        cmd.value = "p 0 0"
+        await pilot.press("enter")
+
+        await conn.push({"type": "ack", "id": conn.sent_ids[-1], "ok": False, "error": "nope"})
+        await pilot.pause()
+        assert app._pending_command_id is None
+        assert not cmd.disabled
+
+
+@pytest.mark.asyncio
+async def test_app_ignores_stale_ack_while_command_is_pending():
+    from tspire.client.app import TSpireApp
+
+    state = ts._sample_state()
+    conn = _FakeConn({"type": "state", "state": state.to_dict()})
+    app = TSpireApp(connection=conn)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        cmd = app.query_one("#cmd")
+        cmd.value = "p 0 0"
+        await pilot.press("enter")
+
+        command_id = conn.sent_ids[-1]
+        await conn.push({"type": "ack", "id": "stale", "ok": False, "error": "old"})
+        await pilot.pause()
+        assert app._pending_command_id == command_id
+        assert cmd.disabled
+
+        await conn.push({"type": "ack", "id": command_id, "ok": False, "error": "current"})
+        await pilot.pause()
+        assert app._pending_command_id is None
+        assert not cmd.disabled
+
+
+@pytest.mark.asyncio
+async def test_refresh_key_sets_pending_and_is_blocked_while_pending():
+    from tspire.client.app import TSpireApp
+
+    state = ts._sample_state()
+    conn = _FakeConn({"type": "state", "state": state.to_dict()})
+    app = TSpireApp(connection=conn)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_refresh()
+        await pilot.pause()
+        assert conn.sent == [("state", [])]
+        assert app._pending_command_id == conn.sent_ids[-1]
+
+        app.action_refresh()
+        await pilot.pause()
+        assert conn.sent == [("state", [])]
+
+
+@pytest.mark.asyncio
+async def test_pending_status_spinner_uses_requested_sequence():
+    from tspire.client.app import TSpireApp
+
+    state = ts._sample_state()
+    conn = _FakeConn({"type": "state", "state": state.to_dict()})
+    app = TSpireApp(connection=conn)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._spinner_index = 0
+        app._set_pending("1", "play 0")
+        assert _plain(app.query_one("#status")).startswith("/ running play 0")
+        app._tick_status()
+        assert _plain(app.query_one("#status")).startswith("| running play 0")
+        app._tick_status()
+        assert _plain(app.query_one("#status")).startswith("\\ running play 0")
+        app._tick_status()
+        assert _plain(app.query_one("#status")).startswith("- running play 0")
+        app._pending_ack_ok = True
+        app._tick_status()
+        assert "refreshing state" in _plain(app.query_one("#status"))
+        app._clear_pending()
+
+
+@pytest.mark.asyncio
+async def test_command_history_uses_up_and_down_arrows():
+    from tspire.client.app import TSpireApp
+
+    state = ts._sample_state()
+    conn = _FakeConn({"type": "state", "state": state.to_dict()})
+    app = TSpireApp(connection=conn)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        cmd = app.query_one("#cmd")
+        app._command_history = ["play 0", "end"]
+        cmd.value = "draft"
+
+        await pilot.press("up")
+        assert cmd.value == "end"
+        await pilot.press("up")
+        assert cmd.value == "play 0"
+        await pilot.press("down")
+        assert cmd.value == "end"
+        await pilot.press("down")
+        assert cmd.value == "draft"
+
+
+@pytest.mark.asyncio
+async def test_tab_accepts_contextual_command_completion():
+    from tspire.client.app import TSpireApp
+
+    state = ts._sample_state()
+    conn = _FakeConn({"type": "state", "state": state.to_dict()})
+    app = TSpireApp(connection=conn)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        cmd = app.query_one("#cmd")
+        cmd.value = "pla"
+
+        await pilot.press("tab")
+        assert cmd.value == "play 0"
+
+        await pilot.press("tab")
+        assert cmd.value == "play 0 0"

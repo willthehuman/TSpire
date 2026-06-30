@@ -55,14 +55,19 @@ class FakeVisionBackend:
     width: int = 1920
     height: int = 1080
     player_hp: tuple[int, int] = (70, 80)
+    top_hp: tuple[int, int] = (70, 80)
     energy: tuple[int, int] = (3, 3)
     block: int = 0
     block_filled: bool = False
     gold: int = 99
+    floor: int = 1
+    deck_count: int = 10
     draw: int = 5
     discard: int = 2
     energy_filled: bool = True
     end_turn_filled: bool = True
+    draw_pile_filled: bool = False
+    discard_pile_filled: bool = False
     monsters: list[FakeMonster] = field(default_factory=list)
     cards: list[FakeCard] = field(default_factory=list)
 
@@ -90,6 +95,10 @@ class FakeVisionBackend:
             return self.discard
         if rect == self.regions.gold:
             return self.gold
+        if rect == self.regions.floor:
+            return self.floor
+        if rect == self.regions.deck_count:
+            return self.deck_count
         if rect.y < 0.5:  # intent damage (upper area)
             m = self._nearest_monster(self._center_x(rect))
             return m.dmg if m else default
@@ -99,6 +108,8 @@ class FakeVisionBackend:
     def ocr_int_pair(self, frame, rect: Rect) -> tuple[int, int]:
         if rect == self.regions.player_hp:
             return self.player_hp
+        if rect == self.regions.top_hp:
+            return self.top_hp
         if rect == self.regions.energy:
             return self.energy
         m = self._nearest_monster(self._center_x(rect))
@@ -128,6 +139,24 @@ class FakeVisionBackend:
             return self.energy_filled
         if rect == self.regions.end_turn:
             return self.end_turn_filled
+        if rect == self.regions.draw_pile:
+            return self.draw_pile_filled
+        if rect == self.regions.discard_pile:
+            return self.discard_pile_filled
         if rect == self.regions.player_block:
             return self.block_filled
         return False
+
+
+@dataclass
+class FakeArbiter:
+    """Scripted Arbiter for the reconciler: returns fixed re-read pairs (or None)."""
+
+    player_hp: tuple[int, int] | None = None
+    energy: tuple[int, int] | None = None
+
+    def reread_player_hp(self) -> tuple[int, int] | None:
+        return self.player_hp
+
+    def reread_energy(self) -> tuple[int, int] | None:
+        return self.energy

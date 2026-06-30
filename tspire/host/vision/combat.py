@@ -45,6 +45,9 @@ _MATCH_THRESHOLD = 0.55
 class ParseResult:
     combat: CombatState
     confidence: float
+    gold: int = 0
+    floor: int = 0
+    deck_count: int = 0
 
 
 def parse_combat(frame, regions: RegionMap, backend: VisionBackend) -> ParseResult:
@@ -63,11 +66,19 @@ def parse_combat(frame, regions: RegionMap, backend: VisionBackend) -> ParseResu
         discard_pile_count=backend.ocr_int(frame, regions.discard_pile),
     )
     confidence = (sum(signals) / len(signals)) if signals else 0.0
-    return ParseResult(combat=combat, confidence=confidence)
+    return ParseResult(
+        combat=combat,
+        confidence=confidence,
+        gold=backend.ocr_int(frame, regions.gold),
+        floor=backend.ocr_int(frame, regions.floor),
+        deck_count=backend.ocr_int(frame, regions.deck_count),
+    )
 
 
 def _parse_player(frame, regions: RegionMap, backend: VisionBackend, signals: list[bool]) -> PlayerCombat:
     hp, hp_max = backend.ocr_int_pair(frame, regions.player_hp)
+    if hp_max <= 0:
+        hp, hp_max = backend.ocr_int_pair(frame, regions.top_hp)
     energy, energy_max = backend.ocr_int_pair(frame, regions.energy)
     block = 0
     if backend.region_filled(frame, regions.player_block):
@@ -75,7 +86,7 @@ def _parse_player(frame, regions: RegionMap, backend: VisionBackend, signals: li
     signals.append(hp_max > 0)
     signals.append(energy_max > 0 or energy > 0)
     return PlayerCombat(
-        current_hp=hp, max_hp=hp_max, block=block, energy=energy or energy_max
+        current_hp=hp, max_hp=hp_max, block=block, energy=energy
     )
 
 

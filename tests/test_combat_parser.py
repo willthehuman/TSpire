@@ -27,7 +27,34 @@ def test_rect_to_pixels_clamps_to_frame():
 
 def test_region_map_lists_all_named_regions():
     names = RegionMap().all_regions()
-    assert {"energy", "player_hp", "monster_search", "hand_search", "draw_pile"} <= set(names)
+    assert {
+        "energy",
+        "player_hp",
+        "top_hp",
+        "deck_count",
+        "monster_search",
+        "hand_search",
+        "relics_search",
+        "potions_search",
+        "player_powers_search",
+        "draw_pile",
+        "discard_pile",
+    } <= set(names)
+
+
+def test_default_regions_align_with_1920x1080_client_layout():
+    regions = RegionMap()
+    assert regions.energy.to_pixels(1920, 1080) == (125, 821, 154, 130)
+    assert regions.top_hp.to_pixels(1920, 1080) == (278, 16, 192, 65)
+    assert regions.player_hp.to_pixels(1920, 1080) == (355, 729, 259, 70)
+    assert regions.player_powers_search.to_pixels(1920, 1080) == (336, 772, 326, 76)
+    assert regions.floor.to_pixels(1920, 1080) == (902, 11, 115, 54)
+    assert regions.deck_count.to_pixels(1920, 1080) == (1699, 11, 154, 86)
+    assert regions.relics_search.to_pixels(1920, 1080) == (29, 81, 826, 92)
+    assert regions.potions_search.to_pixels(1920, 1080) == (566, 11, 211, 81)
+    assert regions.draw_pile.to_pixels(1920, 1080) == (38, 967, 144, 108)
+    assert regions.discard_pile.to_pixels(1920, 1080) == (1757, 967, 144, 108)
+    assert regions.hand_search.to_pixels(1920, 1080) == (442, 821, 1046, 254)
 
 
 # --- classifier ------------------------------------------------------------
@@ -43,13 +70,43 @@ def test_classify_combat_independent_of_monster_detection():
     assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.COMBAT
 
 
-def test_classify_unknown_without_energy():
+def test_classify_detects_combat_without_energy_when_dynamic_cue_present():
     backend = _backend(monsters=[FakeMonster(left=600, hp=40, hp_max=44)], energy_filled=False)
-    assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.UNKNOWN
+    assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.COMBAT
 
 
-def test_classify_unknown_without_end_turn():
+def test_classify_detects_combat_without_end_turn_when_dynamic_cue_present():
     backend = _backend(monsters=[FakeMonster(left=600, hp=40, hp_max=44)], end_turn_filled=False)
+    assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.COMBAT
+
+
+def test_classify_detects_combat_from_piles_when_end_turn_misses():
+    backend = _backend(
+        monsters=[],
+        end_turn_filled=False,
+        draw_pile_filled=True,
+        discard_pile_filled=True,
+    )
+    assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.COMBAT
+
+
+def test_classify_detects_combat_from_cards_and_monsters_if_fixed_regions_miss():
+    backend = _backend(
+        energy_filled=False,
+        end_turn_filled=False,
+        monsters=[FakeMonster(left=600, hp=40, hp_max=44)],
+        cards=[FakeCard(left=300, cost=1, name="Strike")],
+    )
+    assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.COMBAT
+
+
+def test_classify_unknown_without_fixed_or_enough_dynamic_signals():
+    backend = _backend(
+        energy_filled=False,
+        end_turn_filled=False,
+        monsters=[FakeMonster(left=600, hp=40, hp_max=44)],
+        cards=[],
+    )
     assert classify_screen(FakeFrame(), backend.regions, backend) == ScreenType.UNKNOWN
 
 
@@ -64,6 +121,20 @@ def test_parses_player_and_piles():
     assert (p.current_hp, p.max_hp, p.block, p.energy) == (68, 80, 5, 2)
     assert result.combat.draw_pile_count == 7
     assert result.combat.discard_pile_count == 1
+    assert (result.gold, result.floor, result.deck_count) == (99, 1, 10)
+
+
+def test_player_hp_falls_back_to_top_bar_region():
+    backend = _backend(
+        player_hp=(0, 0),
+        top_hp=(80, 80),
+        energy=(3, 3),
+        monsters=[FakeMonster(left=600, hp=40, hp_max=44)],
+    )
+
+    result = parse_combat(FakeFrame(), backend.regions, backend)
+
+    assert (result.combat.player.current_hp, result.combat.player.max_hp) == (80, 80)
 
 
 def test_parses_multiple_monsters_left_to_right_with_intents():

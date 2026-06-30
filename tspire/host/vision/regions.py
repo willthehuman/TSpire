@@ -41,22 +41,25 @@ class RegionMap:
     """
 
     # --- top panel (always visible) ---
-    gold: Rect = Rect(0.250, 0.014, 0.050, 0.034)
-    floor: Rect = Rect(0.440, 0.010, 0.050, 0.040)  # floor number, top-center banner
-    relics_search: Rect = Rect(0.020, 0.052, 0.430, 0.045)  # left-to-right relic row
-    potions_search: Rect = Rect(0.305, 0.008, 0.100, 0.045)  # potion belt (next to gold)
+    gold: Rect = Rect(0.245, 0.010, 0.060, 0.045)
+    top_hp: Rect = Rect(0.145, 0.015, 0.100, 0.060)  # top-bar heart + "cur/max" text
+    floor: Rect = Rect(0.470, 0.010, 0.060, 0.050)  # floor number, top-center banner
+    deck_count: Rect = Rect(0.885, 0.010, 0.080, 0.080)  # master deck count, top-right
+    relics_search: Rect = Rect(0.015, 0.075, 0.430, 0.085)  # left-to-right relic row
+    potions_search: Rect = Rect(0.295, 0.010, 0.110, 0.075)  # potion belt (next to gold)
 
     # --- player, in combat ---
-    player_hp: Rect = Rect(0.160, 0.685, 0.110, 0.040)  # red HP bar + "cur/max" text
+    player_hp: Rect = Rect(0.185, 0.675, 0.135, 0.065)  # red HP bar + "cur/max" text
+    player_powers_search: Rect = Rect(0.175, 0.715, 0.170, 0.070)  # player buffs/debuffs
     player_block: Rect = Rect(0.160, 0.640, 0.060, 0.045)  # shield badge, when block > 0
-    energy: Rect = Rect(0.020, 0.815, 0.075, 0.075)  # energy orb "cur/max", bottom-left
+    energy: Rect = Rect(0.065, 0.760, 0.080, 0.120)  # energy orb "cur/max", bottom-left
 
     # --- end-turn button (bottom-right): used by the classifier to detect combat ---
-    end_turn: Rect = Rect(0.790, 0.815, 0.150, 0.075)
+    end_turn: Rect = Rect(0.790, 0.775, 0.150, 0.105)
 
     # --- pile counters (bottom corners) ---
-    draw_pile: Rect = Rect(0.000, 0.920, 0.050, 0.065)  # draw count, bottom-left
-    discard_pile: Rect = Rect(0.950, 0.920, 0.050, 0.065)  # discard count, bottom-right
+    draw_pile: Rect = Rect(0.020, 0.895, 0.075, 0.100)  # draw count, bottom-left
+    discard_pile: Rect = Rect(0.915, 0.895, 0.075, 0.100)  # discard count, bottom-right
 
     # --- dynamic search regions (count not known a priori) ---
     # Monster HP bars sit on the ground line; restricting to that band (rather than the
@@ -64,7 +67,7 @@ class RegionMap:
     # by its HP bar, then read intent/sprite *above* it in the full frame.
     monster_search: Rect = Rect(0.450, 0.600, 0.420, 0.180)
     # Hand fans across the bottom-center; cards located by their bright frames.
-    hand_search: Rect = Rect(0.255, 0.840, 0.480, 0.155)
+    hand_search: Rect = Rect(0.230, 0.760, 0.545, 0.235)
 
     def all_regions(self) -> dict[str, Rect]:
         """Name -> Rect for every region (used by the calibration overlay)."""

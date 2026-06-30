@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from typing import Awaitable, Callable, Protocol
+from typing import Protocol
 
 import websockets
 from websockets.asyncio.server import ServerConnection, serve
@@ -38,7 +38,11 @@ class StateProvider(Protocol):
 class CommandHandler(Protocol):
     """Executes a command. Returns (ok, error_message)."""
 
-    def execute(self, command: protocol.Command) -> tuple[bool, str | None]: ...
+    def execute(
+        self,
+        command: protocol.Command,
+        state_hint: GameState | None = None,
+    ) -> tuple[bool, str | None]: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -58,7 +62,11 @@ class StubStateProvider:
 class EchoCommandHandler:
     """Placeholder used until the gamepad executor (M3) is wired in."""
 
-    def execute(self, command: protocol.Command) -> tuple[bool, str | None]:
+    def execute(
+        self,
+        command: protocol.Command,
+        state_hint: GameState | None = None,
+    ) -> tuple[bool, str | None]:
         log.info("echo command: verb=%s args=%s", command.verb, command.args)
         if command.verb == protocol.Verb.STATE:
             return True, None
@@ -96,7 +104,7 @@ class HostServer:
     def __init__(self, session: GameSession) -> None:
         self.session = session
         self.clients: set[ServerConnection] = set()
-        self._state_dirty = asyncio.Event()
+        self._command_lock = asyncio.Lock()
 
     async def _send(self, ws: ServerConnection, message: str) -> None:
         try:
@@ -136,10 +144,18 @@ class HostServer:
         if data.get("type") != "command":
             return
         command = protocol.command_from_message(data)
-        ok, error = await asyncio.to_thread(self.session.command_handler.execute, command)
-        await self._send(ws, protocol.ack_message(command.id, ok, error))
-        # After any command, re-read and push the (possibly changed) state.
-        await self.push_state()
+        async with self._command_lock:
+            state_hint = self.session.last_state
+            ok, error = await asyncio.to_thread(
+                self.session.command_handler.execute,
+                command,
+                state_hint,
+            )
+            await self._send(ws, protocol.ack_message(command.id, ok, error))
+            if protocol.is_state_altering(command.verb):
+                await asyncio.sleep(max(0.0, float(self.session.config.input_settle_seconds)))
+            # After any command, re-read and push the authoritative state.
+            await self.push_state()
 
     async def poll_loop(self) -> None:
         """Periodically refresh state so clients see passive changes.
