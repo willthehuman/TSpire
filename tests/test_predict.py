@@ -9,6 +9,7 @@ from tspire.common.schema import (
     Power,
     ScreenType,
 )
+from tspire.host import cards
 from tspire.host.predict import BASE_ENERGY, predict
 
 
@@ -167,6 +168,56 @@ def test_play_single_target_card_targets_lone_enemy_without_index():
 def test_play_unknown_card_is_unpredictable():
     before = _combat(hand=[Card(name="Some Unknown Rare", cost=2, index=0)])
     assert predict(before, _play(0)) is None
+
+
+def test_play_runtime_derived_card(monkeypatch):
+    monkeypatch.setattr(
+        cards,
+        "_runtime_card_db",
+        lambda: {
+            cards._norm("Runtime Strike"): cards.CardData(
+                "Runtime Strike",
+                name="Runtime Strike",
+                damage=7,
+                target=True,
+                damage_up=10,
+                source="jar",
+            )
+        },
+    )
+    before = _combat(
+        energy=3,
+        monsters=[Monster(current_hp=20, max_hp=20, index=0)],
+        hand=[Card(name="Runtime Strike", cost=1, index=0)],
+    )
+
+    state = predict(before, _play(0, 0))
+
+    assert state.combat_state.monsters[0].current_hp == 13
+    assert state.combat_state.player.energy == 2
+
+
+def test_play_unpredictable_runtime_card_stays_unpredictable(monkeypatch):
+    monkeypatch.setattr(
+        cards,
+        "_runtime_card_db",
+        lambda: {
+            cards._norm("Runtime Draw"): cards.CardData(
+                "Runtime Draw",
+                name="Runtime Draw",
+                damage=7,
+                target=True,
+                predictable=False,
+                source="jar",
+            )
+        },
+    )
+    before = _combat(
+        monsters=[Monster(current_hp=20, max_hp=20, index=0)],
+        hand=[Card(name="Runtime Draw", cost=1, index=0)],
+    )
+
+    assert predict(before, _play(0, 0)) is None
 
 
 def test_play_upgraded_card_uses_upgraded_value():

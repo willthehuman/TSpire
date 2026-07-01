@@ -11,6 +11,7 @@ rather than raising, and an overall confidence score reflects how much was read 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from tspire.common.schema import Card, CombatState, Intent, Monster, PlayerCombat
@@ -22,19 +23,40 @@ from tspire.host.vision.regions import Rect, RegionMap
 _INTENT_ALIASES: dict[str, Intent] = {
     "attack": Intent.ATTACK,
     "aggressive": Intent.ATTACK,
+    "attackbuff": Intent.ATTACK_BUFF,
     "attack_buff": Intent.ATTACK_BUFF,
+    "attackdebuff": Intent.ATTACK_DEBUFF,
     "attack_debuff": Intent.ATTACK_DEBUFF,
+    "attackdefend": Intent.ATTACK_DEFEND,
     "attack_defend": Intent.ATTACK_DEFEND,
     "defend": Intent.DEFEND,
+    "defendbuff": Intent.DEFEND_BUFF,
     "defend_buff": Intent.DEFEND_BUFF,
+    "defenddebuff": Intent.DEFEND_DEBUFF,
     "defend_debuff": Intent.DEFEND_DEBUFF,
     "buff": Intent.BUFF,
+    "buff1": Intent.BUFF,
+    "buff1l": Intent.BUFF,
     "debuff": Intent.DEBUFF,
+    "debuff1": Intent.DEBUFF,
+    "debuff1l": Intent.DEBUFF,
+    "debuff2": Intent.DEBUFF,
+    "debuff2l": Intent.DEBUFF,
+    "strongdebuff": Intent.STRONG_DEBUFF,
     "strong_debuff": Intent.STRONG_DEBUFF,
     "escape": Intent.ESCAPE,
+    "escapel": Intent.ESCAPE,
     "sleep": Intent.SLEEP,
+    "sleepl": Intent.SLEEP,
     "stun": Intent.STUN,
+    "stunl": Intent.STUN,
+    "magic": Intent.MAGIC,
+    "magicl": Intent.MAGIC,
+    "special": Intent.MAGIC,
+    "speciall": Intent.MAGIC,
+    "placeholder": Intent.UNKNOWN,
     "unknown": Intent.UNKNOWN,
+    "unknownl": Intent.UNKNOWN,
 }
 
 # Confidence below which a template match is treated as "no match".
@@ -51,6 +73,13 @@ class ParseResult:
     observed: dict[str, bool] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class AttackRead:
+    damage: int
+    hits: int = 1
+    score: float = 0.5
+
+
 def parse_combat(frame, regions: RegionMap, backend: VisionBackend, *, use_easyocr: bool = True) -> ParseResult:
     h, w = frame.shape[:2]
     signals: list[bool] = []
@@ -60,7 +89,7 @@ def parse_combat(frame, regions: RegionMap, backend: VisionBackend, *, use_easyo
     use_eo = bool(use_easyocr) and _easyocr_on()
 
     player, observed = _parse_player(frame, regions, backend, signals, use_eo)
-    monsters = _parse_monsters(frame, regions, backend, w, h, signals)
+    monsters = _parse_monsters(frame, regions, backend, w, h, signals, use_eo)
     hand = _parse_hand(frame, regions, backend, w, h, signals, use_eo)
     signals.append(bool(monsters))
     signals.append(bool(hand))
@@ -131,12 +160,20 @@ def _parse_player(
     )
 
 
-def _parse_monsters(frame, regions: RegionMap, backend: VisionBackend, w: int, h: int, signals: list[bool]) -> list[Monster]:
+def _parse_monsters(
+    frame,
+    regions: RegionMap,
+    backend: VisionBackend,
+    w: int,
+    h: int,
+    signals: list[bool],
+    use_eo: bool = False,
+) -> list[Monster]:
     bars = backend.find_red_bars(frame, regions.monster_search)
     monsters: list[Monster] = []
     for i, bar in enumerate(bars):
         hp, hp_max = backend.ocr_int_pair(frame, _hp_text_rect(bar, w, h))
-        intent, dmg = _parse_intent(frame, bar, backend, w, h)
+        intent, dmg, hits = _parse_intent(frame, bar, backend, w, h, use_eo=use_eo)
         name, score = backend.classify_box(frame, _sprite_box(bar), "monsters")
         monsters.append(
             Monster(
@@ -146,6 +183,7 @@ def _parse_monsters(frame, regions: RegionMap, backend: VisionBackend, w: int, h
                 max_hp=hp_max,
                 intent=intent,
                 intent_damage=dmg,
+                intent_hits=hits,
                 index=i,
             )
         )
@@ -248,7 +286,15 @@ def _hp_text_rect(bar: BBox, w: int, h: int) -> Rect:
     return _box_to_rect(box, w, h)
 
 
-def _parse_intent(frame, bar: BBox, backend: VisionBackend, w: int, h: int) -> tuple[Intent, int]:
+def _parse_intent(
+    frame,
+    bar: BBox,
+    backend: VisionBackend,
+    w: int,
+    h: int,
+    *,
+    use_eo: bool = False,
+) -> tuple[Intent, int, int]:
     """Read a monster's intent from the icon/number floating above it.
 
     A *pure* attack intent has no dedicated icon in the game's art -- it is just the damage
@@ -257,19 +303,18 @@ def _parse_intent(frame, bar: BBox, backend: VisionBackend, w: int, h: int) -> t
     in height, so both reads scan a band of vertical offsets (in bar-widths above the HP bar)
     rather than a single calibrated point.
     """
-    # 1) attack damage number
-    dmg = 0
-    for up in (0.7, 0.85, 1.0, 1.15, 1.3):
-        rect = Rect(
-            (bar.cx - 0.32 * bar.width) / w,
-            (bar.top - up * bar.width) / h,
-            0.64 * bar.width / w,
-            0.34 * bar.width / h,
-        )
+    # 1) attack damage number. Read several overlapping crops, then pick a consensus. This
+    # avoids a single jittery OCR crop rewriting the damage every refresh.
+    reads: list[AttackRead] = []
+    for i, rect in enumerate(_intent_damage_rects(bar, w, h)):
         val = backend.ocr_int(frame, rect, default=-1)
         if val > 0:
-            dmg = val
-            break
+            reads.append(AttackRead(val, 1, 0.45 - i * 0.03))
+        if use_eo:
+            reads.extend(_eo_attack_reads(frame, rect, w, h))
+    attack = _pick_attack_read(reads)
+    dmg = attack.damage if attack else 0
+    hits = attack.hits if attack else 1
 
     # 2) icon classification (for defend/buff/debuff/stun/escape/sleep and attack-combos)
     intent_id, best = "", 0.0
@@ -279,14 +324,123 @@ def _parse_intent(frame, bar: BBox, backend: VisionBackend, w: int, h: int) -> t
         iid, score = backend.classify_box(frame, box, "intents")
         if score > best:
             intent_id, best = iid, score
-    icon_intent = _INTENT_ALIASES.get(intent_id.lower(), Intent.UNKNOWN) if best >= _MATCH_THRESHOLD else Intent.UNKNOWN
+    icon_intent = _intent_from_template_id(intent_id) if best >= _MATCH_THRESHOLD else Intent.UNKNOWN
 
     if dmg > 0:
         # A number means an attack; keep the combo type if the icon identified one.
         if icon_intent in (Intent.ATTACK_DEFEND, Intent.ATTACK_BUFF, Intent.ATTACK_DEBUFF):
-            return icon_intent, dmg
-        return Intent.ATTACK, dmg
-    return icon_intent, 0
+            return icon_intent, dmg, hits
+        return Intent.ATTACK, dmg, hits
+    return icon_intent, 0, 1
+
+
+def _intent_damage_rects(bar: BBox, w: int, h: int) -> list[Rect]:
+    return [
+        Rect(
+            (bar.cx - 0.32 * bar.width) / w,
+            (bar.top - up * bar.width) / h,
+            0.64 * bar.width / w,
+            0.34 * bar.width / h,
+        )
+        for up in (0.7, 0.85, 1.0, 1.15, 1.3)
+    ]
+
+
+def _intent_from_template_id(intent_id: str) -> Intent:
+    key = re.sub(r"[^a-z0-9]+", "", (intent_id or "").lower())
+    if key in _INTENT_ALIASES:
+        return _INTENT_ALIASES[key]
+    if key.startswith("attackbuff"):
+        return Intent.ATTACK_BUFF
+    if key.startswith("attackdebuff"):
+        return Intent.ATTACK_DEBUFF
+    if key.startswith("attackdefend"):
+        return Intent.ATTACK_DEFEND
+    if key.startswith("defendbuff"):
+        return Intent.DEFEND_BUFF
+    if key.startswith("defend"):
+        return Intent.DEFEND
+    if key.startswith("buff"):
+        return Intent.BUFF
+    if key.startswith("debuff"):
+        return Intent.DEBUFF
+    return Intent.UNKNOWN
+
+
+_ATTACK_X_RE = re.compile(r"(\d{1,2})\s*[xX×]\s*(\d{1,2})")
+_ATTACK_INT_RE = re.compile(r"\d{1,2}")
+
+
+def _eo_attack_reads(frame, rect: Rect, w: int, h: int) -> list[AttackRead]:
+    crop = _crop_rect_safe(frame, rect, w, h)
+    if crop is None:
+        return []
+    try:
+        from tspire.host.vision import easyocr_reader
+
+        boxes = easyocr_reader.read_boxes(crop)
+    except Exception:
+        return []
+    reads: list[AttackRead] = []
+    texts = []
+    for _cx, _cy, text, conf in boxes:
+        text = str(text).strip()
+        if not text:
+            continue
+        texts.append(text)
+        parsed = _parse_attack_text(text, score=max(0.0, min(1.0, float(conf))))
+        if parsed is not None:
+            reads.append(parsed)
+    if len(texts) > 1:
+        combined = " ".join(texts)
+        parsed = _parse_attack_text(combined, score=max((r.score for r in reads), default=0.55))
+        if parsed is not None:
+            reads.append(parsed)
+    return reads
+
+
+def _crop_rect_safe(frame, rect: Rect, w: int, h: int):
+    try:
+        left, top, cw, ch = rect.to_pixels(w, h)
+        return frame[top : top + ch, left : left + cw]
+    except Exception:
+        return None
+
+
+def _parse_attack_text(text: str, *, score: float = 0.5) -> AttackRead | None:
+    normalized = text.replace("×", "x")
+    m = _ATTACK_X_RE.search(normalized)
+    if m:
+        return _valid_attack_read(int(m.group(1)), int(m.group(2)), score)
+    m = _ATTACK_INT_RE.search(normalized)
+    if m:
+        return _valid_attack_read(int(m.group()), 1, score)
+    return None
+
+
+def _valid_attack_read(damage: int, hits: int, score: float) -> AttackRead | None:
+    if not (1 <= damage <= 99 and 1 <= hits <= 9):
+        return None
+    return AttackRead(damage, hits, score)
+
+
+def _pick_attack_read(reads: list[AttackRead]) -> AttackRead | None:
+    if not reads:
+        return None
+    groups: dict[tuple[int, int], list[AttackRead]] = {}
+    for read in reads:
+        groups.setdefault((read.damage, read.hits), []).append(read)
+    pair, grouped = max(
+        groups.items(),
+        key=lambda item: (len(item[1]), sum(r.score for r in item[1]), -item[0][0]),
+    )
+    if len(grouped) > 1:
+        return AttackRead(pair[0], pair[1], sum(r.score for r in grouped) / len(grouped))
+    high_conf = max(reads, key=lambda r: r.score)
+    if high_conf.score >= 0.80:
+        return high_conf
+    # With no agreement and no high-confidence OCR, use the median damage to reject outliers.
+    return sorted(reads, key=lambda r: r.damage)[len(reads) // 2]
 
 
 def _sprite_box(bar: BBox) -> BBox:

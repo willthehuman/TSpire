@@ -161,6 +161,44 @@ def test_parses_multiple_monsters_left_to_right_with_intents():
     assert monsters[1].current_hp == 30 and monsters[1].max_hp == 30
 
 
+def test_intent_template_ids_use_game_asset_camelcase_names():
+    backend = _backend(
+        monsters=[
+            FakeMonster(left=400, hp=10, hp_max=20, intent_id="attackBuff", dmg=7),
+            FakeMonster(left=900, hp=30, hp_max=30, intent_id="defendBuff", dmg=0),
+        ]
+    )
+
+    monsters = parse_combat(FakeFrame(), backend.regions, backend).combat.monsters
+
+    assert monsters[0].intent == Intent.ATTACK_BUFF
+    assert monsters[0].intent_damage == 7
+    assert monsters[1].intent == Intent.DEFEND_BUFF
+
+
+def test_easyocr_reads_multihit_intent_damage(monkeypatch):
+    class SliceableFrame(FakeFrame):
+        size = 1
+
+        def __getitem__(self, _key):
+            return self
+
+    backend = _backend(monsters=[FakeMonster(left=600, hp=40, hp_max=44, dmg=0)])
+
+    monkeypatch.setattr("tspire.host.vision.combat._easyocr_on", lambda: True)
+    monkeypatch.setattr("tspire.host.vision.easyocr_reader.read_int", lambda _crop: -1)
+    monkeypatch.setattr(
+        "tspire.host.vision.easyocr_reader.read_boxes",
+        lambda _crop: [(20.0, 10.0, "6x2", 0.95)],
+    )
+
+    monster = parse_combat(SliceableFrame(), backend.regions, backend).combat.monsters[0]
+
+    assert monster.intent == Intent.ATTACK
+    assert monster.intent_damage == 6
+    assert monster.intent_hits == 2
+
+
 def test_low_confidence_match_drops_monster_name_and_intent():
     backend = _backend(
         monsters=[FakeMonster(left=600, hp=40, hp_max=44, intent_score=0.1, name_score=0.1)]

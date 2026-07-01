@@ -65,10 +65,14 @@ def read_int(image) -> int:
     """Best single integer found in ``image`` (e.g. energy '3', deck '10'), or -1."""
     import re
 
-    best = -1
-    for _cx, _cy, text, _conf in read_boxes(image):
+    best = (-1.0, -1)
+    for _cx, _cy, text, conf in read_boxes(image):
         m = re.search(r"\d+", text)
         if m:
-            best = int(m.group())
-            break
-    return best
+            value = int(m.group())
+            # Prefer high-confidence reads, with pure numeric tokens winning ties.
+            numeric_bonus = 0.10 if text.strip().isdigit() else 0.0
+            score = float(conf) + numeric_bonus
+            if score > best[0]:
+                best = (score, value)
+    return best[1]

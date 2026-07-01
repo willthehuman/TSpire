@@ -175,6 +175,89 @@ def test_missing_enemy_is_carried_when_current_frame_is_occluded():
     assert protocol.Verb.PLAY in state.available_commands
 
 
+def test_enemy_intent_damage_is_stabilized_across_passive_refreshes():
+    provider = _provider()
+    provider._last_state = GameState(
+        screen_type=ScreenType.COMBAT,
+        in_combat=True,
+        current_hp=80,
+        max_hp=80,
+        combat_state=CombatState(
+            player=PlayerCombat(current_hp=80, max_hp=80, energy=3),
+            monsters=[
+                Monster(
+                    name="JawWorm",
+                    monster_id="JawWorm",
+                    current_hp=40,
+                    max_hp=44,
+                    intent=Intent.ATTACK,
+                    intent_damage=7,
+                    intent_hits=1,
+                    index=0,
+                )
+            ],
+        ),
+        available_commands=protocol.commands_for_screen(ScreenType.COMBAT.value),
+    )
+    backend = FakeVisionBackend(
+        regions=provider.regions,
+        player_hp=(80, 80),
+        energy=(3, 3),
+        monsters=[FakeMonster(left=900, hp=40, hp_max=44, name="JawWorm", dmg=2)],
+        cards=[FakeCard(left=300, cost=1, name="Strike")],
+    )
+
+    state = provider._build_combat_state(FakeFrame(), backend)
+
+    monster = state.combat_state.monsters[0]
+    assert monster.intent == Intent.ATTACK
+    assert monster.intent_damage == 7
+    assert monster.current_hp == 40
+    assert protocol.Verb.PLAY in state.available_commands
+
+
+def test_unknown_enemy_intent_carries_previous_known_intent():
+    provider = _provider()
+    provider._last_state = GameState(
+        screen_type=ScreenType.COMBAT,
+        in_combat=True,
+        current_hp=80,
+        max_hp=80,
+        combat_state=CombatState(
+            player=PlayerCombat(current_hp=80, max_hp=80, energy=3),
+            monsters=[
+                Monster(
+                    name="Cultist",
+                    monster_id="Cultist",
+                    current_hp=20,
+                    max_hp=20,
+                    intent=Intent.BUFF,
+                    index=0,
+                )
+            ],
+        ),
+    )
+    backend = FakeVisionBackend(
+        regions=provider.regions,
+        player_hp=(80, 80),
+        energy=(3, 3),
+        monsters=[
+            FakeMonster(
+                left=900,
+                hp=20,
+                hp_max=20,
+                name="Cultist",
+                intent_id="unknown",
+                dmg=0,
+            )
+        ],
+    )
+
+    state = provider._build_combat_state(FakeFrame(), backend)
+
+    assert state.combat_state.monsters[0].intent == Intent.BUFF
+
+
 def test_zero_player_hp_is_a_fresh_read_not_a_missing_value():
     provider = _provider()
     provider._last_state = GameState(

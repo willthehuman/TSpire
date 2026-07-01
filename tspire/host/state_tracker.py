@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import json
 
 from tspire.common import protocol
-from tspire.common.schema import GameState, ScreenType
+from tspire.common.schema import GameState, Intent, ScreenType
 from tspire.host.predict import predict
 from tspire.host.reconcile import reconcile
 from tspire.host.vision.combat import ParseResult
@@ -285,6 +285,7 @@ class StateTracker:
                 monster.monster_id = prior.monster_id
             if monster.max_hp <= 0:
                 monster.max_hp = prior.max_hp
+            _stabilize_monster_semantics(monster, prior)
 
         carried = 0
         for i, prior in enumerate(previous_monsters):
@@ -404,6 +405,49 @@ def _monster_alive(monster) -> bool:
     if monster.is_gone or monster.half_dead:
         return False
     return monster.max_hp > 0 or monster.current_hp > 0
+
+
+def _stabilize_monster_semantics(current, previous) -> None:
+    """Keep matched enemy fields steady across passive refreshes.
+
+    During the player's turn enemy intent, max HP, block and powers do not change unless an
+    action is happening. This reducer only runs when there is no pending action, so it can
+    smooth OCR/template jitter without hiding command results.
+    """
+    if not _monster_alive(previous):
+        return
+
+    if previous.max_hp > 0 and (current.max_hp <= 0 or current.max_hp != previous.max_hp):
+        current.max_hp = previous.max_hp
+    if previous.current_hp > 0:
+        if current.current_hp <= 0 and not current.is_gone:
+            current.current_hp = previous.current_hp
+        elif current.current_hp > previous.current_hp:
+            current.current_hp = previous.current_hp
+    if current.max_hp > 0 and current.current_hp > current.max_hp:
+        current.current_hp = min(previous.current_hp, current.max_hp)
+
+    if current.block <= 0 and previous.block > 0:
+        current.block = previous.block
+    if not current.powers and previous.powers:
+        current.powers = deepcopy(previous.powers)
+
+    if current.intent in {Intent.UNKNOWN, Intent.NONE} and previous.intent not in {
+        Intent.UNKNOWN,
+        Intent.NONE,
+    }:
+        current.intent = previous.intent
+        current.intent_damage = previous.intent_damage
+        current.intent_hits = previous.intent_hits
+        return
+
+    if current.intent.is_attack and previous.intent.is_attack:
+        # OCR of the attack number is the noisiest enemy field in CV/EasyOCR mode. With no
+        # pending action, a differing read is almost always refresh jitter.
+        if previous.intent_damage > 0 and current.intent_damage != previous.intent_damage:
+            current.intent_damage = previous.intent_damage
+        if previous.intent_hits > 1 and current.intent_hits <= 1:
+            current.intent_hits = previous.intent_hits
 
 
 def _gameplay_changed(current: GameState, before: GameState) -> bool:
