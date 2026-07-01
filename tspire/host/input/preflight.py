@@ -24,6 +24,10 @@ def collect_preflight_warnings(config, state_provider=None) -> list[str]:
         prefs_warning = _controller_pref_warning(config)
         if prefs_warning:
             warnings.append(prefs_warning)
+        if not config.input_dry_run:
+            from tspire.host.input.controller_check import collect_controller_warnings
+
+            warnings.extend(collect_controller_warnings())
 
     return warnings
 

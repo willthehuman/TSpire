@@ -1,11 +1,19 @@
 """Combat parser + classifier + region-math tests (no native deps, no game)."""
 
+import pytest
+
 from tspire.common.schema import Intent, ScreenType
 from tspire.host.classify import classify_screen
 from tspire.host.vision.combat import parse_combat
+from tspire.host.vision.card_names import CardNameIndex
 from tspire.host.vision.regions import Rect, RegionMap
 
 from tests.fakes import FakeCard, FakeFrame, FakeMonster, FakeVisionBackend
+
+
+@pytest.fixture(autouse=True)
+def _easyocr_unavailable(monkeypatch):
+    monkeypatch.setattr("tspire.host.vision.combat._easyocr_on", lambda: False)
 
 
 def _backend(**kw) -> FakeVisionBackend:
@@ -168,6 +176,59 @@ def test_parses_hand_with_costs_and_names():
     )
     hand = parse_combat(FakeFrame(), backend.regions, backend).combat.hand
     assert [(c.index, c.cost, c.name) for c in hand] == [(0, 1, "Strike"), (1, 2, "Bash")]
+
+
+def test_easyocr_flag_disables_availability_probe(monkeypatch):
+    backend = _backend(
+        monsters=[FakeMonster(left=600, hp=40, hp_max=44)],
+        cards=[FakeCard(left=300, cost=1, name="Strike")],
+    )
+
+    def fail_if_called():
+        raise AssertionError("EasyOCR availability should not be checked when disabled")
+
+    monkeypatch.setattr("tspire.host.vision.combat._easyocr_on", fail_if_called)
+
+    result = parse_combat(FakeFrame(), backend.regions, backend, use_easyocr=False)
+
+    assert result.combat.player.energy == 3
+    assert result.deck_count == 10
+
+
+def test_easyocr_reads_stylized_fields_and_hand(monkeypatch):
+    class SliceableFrame(FakeFrame):
+        size = 1
+
+        def __getitem__(self, _key):
+            return self
+
+    backend = _backend(monsters=[FakeMonster(left=600, hp=40, hp_max=44)])
+    reads = iter([4, 20])
+
+    monkeypatch.setattr("tspire.host.vision.combat._easyocr_on", lambda: True)
+    monkeypatch.setattr("tspire.host.vision.easyocr_reader.read_int", lambda _crop: next(reads))
+    monkeypatch.setattr(
+        "tspire.host.vision.easyocr_reader.read_boxes",
+        lambda _crop: [
+            (20.0, 10.0, "1", 0.95),
+            (95.0, 10.0, "Strike", 0.95),
+            (220.0, 10.0, "2", 0.95),
+            (305.0, 10.0, "Bash", 0.95),
+        ],
+    )
+    monkeypatch.setattr(
+        "tspire.host.vision.card_names.default_card_index",
+        lambda: CardNameIndex(["Strike", "Bash"]),
+    )
+
+    result = parse_combat(SliceableFrame(), backend.regions, backend)
+
+    assert result.combat.player.energy == 4
+    assert result.deck_count == 20
+    assert [(c.index, c.cost, c.name) for c in result.combat.hand] == [
+        (0, 1, "Strike"),
+        (1, 2, "Bash"),
+    ]
 
 
 def test_confidence_high_when_everything_reads():

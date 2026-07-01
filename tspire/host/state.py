@@ -140,7 +140,12 @@ class ScreenStateProvider:
         else:
             from tspire.host.vision.combat import parse_combat
 
-            result = parse_combat(frame, self.regions, backend)
+            result = parse_combat(
+                frame,
+                self.regions,
+                backend,
+                use_easyocr=getattr(self.config, "use_easyocr", True),
+            )
 
         player = result.combat.player
         state = GameState(

@@ -16,8 +16,10 @@ Screen reading has two modes (config `vision_mode`):
   one scene call + sub-second OCR; if OCR reads nothing (e.g. no Tesseract), each number
   falls back to its own model crop, so it never regresses. Runs only during combat and on
   demand (connect / after a command), never on an idle timer.
-- **`cv`** — OpenCV template matching + Tesseract OCR for everything. Fast, but fragile on
-  the cluttered scene and needs calibration + a Tesseract install.
+- **`cv`** — OpenCV template matching + Tesseract OCR for flat UI text, with optional
+  EasyOCR for stylised card titles, energy, and deck count when installed (`use_easyocr`,
+  default on). Fast, but fragile on the cluttered scene and needs calibration + a Tesseract
+  install.
 
 There are three input backends (`input_backend`, or `TSPIRE_INPUT_BACKEND`):
 
@@ -100,6 +102,9 @@ pip install -e ".[client]"
 # Host machine (the gaming PC):
 pip install -e ".[host]"
 # also install Tesseract OCR and ensure it is on PATH (or set tesseract_cmd in config)
+
+# Optional, improves cv mode on stylised card/energy/deck text:
+pip install -e ".[host,easyocr]"
 ```
 
 ## Run (M2 dashboard)
@@ -148,6 +153,19 @@ in-game, and the detection notes below apply.
   receives nothing.
 - Confirm **Controller Enabled** is on in the in-game settings.
 
+These aren't arbitrary: StS enumerates DirectInput controllers **once** at startup, binds
+`controllers.first()`, name-matches "360"/"Xbox One", and skips DirectInput entirely if Steam
+Input is active (verified in the decompiled `CInputHelper`/`SteamInputHelper`). Check the setup
+from the host before launching the game:
+
+```bash
+python -m tspire.host.input_probe --controller-check
+```
+
+It lists the controllers the OS exposes and flags the failure modes — a Steam Input pad
+intercepting, the Xbox pad not being first, or no virtual pad present at all. (The gamepad
+preflight runs the same check automatically.)
+
 When it's working you'll see the game switch to controller mode: a card lifts/focuses with
 its tooltip and on-screen button prompts (X / Y / LT / RT) appear.
 
@@ -176,7 +194,7 @@ keyed on it.
 
 Useful env overrides: `TSPIRE_VISION_MODE`, `TSPIRE_OLLAMA_URL`,
 `TSPIRE_OLLAMA_MODEL`, `TSPIRE_LLM_IMAGE_WIDTH`, `TSPIRE_OCR_HUD_NUMBERS`,
-`TSPIRE_TESSERACT_CMD`, `TSPIRE_OLLAMA_THINK`, `TSPIRE_INPUT_BACKEND`,
+`TSPIRE_USE_EASYOCR`, `TSPIRE_TESSERACT_CMD`, `TSPIRE_OLLAMA_THINK`, `TSPIRE_INPUT_BACKEND`,
 `TSPIRE_INPUT_DRY_RUN`, `TSPIRE_INPUT_RAW`, `TSPIRE_INPUT_PRESS_SECONDS`,
 `TSPIRE_INPUT_STEP_DELAY`, `TSPIRE_INPUT_SETTLE_SECONDS`,
 `TSPIRE_INPUT_COMMAND_TIMEOUT`, and the mouse-backend tunables

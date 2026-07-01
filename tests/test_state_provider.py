@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from tspire.common import protocol
 from tspire.common.schema import (
     CombatState,
@@ -14,9 +16,13 @@ from tspire.host.vision.regions import RegionMap
 from tests.fakes import FakeCard, FakeFrame, FakeMonster, FakeVisionBackend
 
 
-def _provider(*, vision_mode="cv", predict_enabled=False):
+def _provider(*, vision_mode="cv", predict_enabled=False, use_easyocr=False):
     provider = ScreenStateProvider.__new__(ScreenStateProvider)
-    provider.config = HostConfig(vision_mode=vision_mode, predict_enabled=predict_enabled)
+    provider.config = HostConfig(
+        vision_mode=vision_mode,
+        predict_enabled=predict_enabled,
+        use_easyocr=use_easyocr,
+    )
     provider.regions = RegionMap()
     provider._backend = None
     provider._llm = None
@@ -46,6 +52,30 @@ def test_build_combat_state_includes_run_stats_and_act():
     assert state.current_hp == 80
     assert state.max_hp == 80
     assert state.combat_state.player.energy == 3
+
+
+def test_cv_mode_passes_easyocr_config_to_parser(monkeypatch):
+    provider = _provider(use_easyocr=False)
+    provider.config.predict_arbiter = False
+    backend = FakeVisionBackend(regions=provider.regions)
+    seen = {}
+
+    def fake_parse_combat(_frame, _regions, _backend, *, use_easyocr=True):
+        seen["use_easyocr"] = use_easyocr
+        return SimpleNamespace(
+            combat=CombatState(player=PlayerCombat(current_hp=80, max_hp=80, energy=3)),
+            confidence=1.0,
+            gold=0,
+            floor=1,
+            deck_count=0,
+            observed={"current_hp": True, "max_hp": True, "energy": True},
+        )
+
+    monkeypatch.setattr("tspire.host.vision.combat.parse_combat", fake_parse_combat)
+
+    provider._build_combat_state(FakeFrame(), backend)
+
+    assert seen["use_easyocr"] is False
 
 
 def test_first_missing_run_stats_are_marked_unknown_not_authoritative_zero():

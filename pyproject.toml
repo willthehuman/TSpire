@@ -26,6 +26,10 @@ host = [
     "pygetwindow>=0.0.9",
     "vgamepad>=0.1.0",
 ]
+# Optional deep-learning OCR for stylised Slay the Spire text in cv mode.
+easyocr = [
+    "easyocr>=1.7.1",
+]
 # The terminal client.
 client = [
     "textual>=0.60",

@@ -66,6 +66,13 @@ def _cfg(**overrides):
         "input_step_delay": 0.0,
         "input_settle_seconds": 0.0,
         "input_command_timeout": 0.02,
+        # Keep the deterministic press-sequence assertions below focused on navigation; the
+        # post-play clear-focus press is exercised in its own test.
+        "gamepad_clear_focus_after_play": False,
+        # These tests exercise the closed-loop CV navigation; the deterministic path has its
+        # own tests. (Dry-run is always deterministic regardless of this flag.)
+        "gamepad_deterministic_nav": False,
+        "gamepad_nav_delay": 0.0,
     }
     data.update(overrides)
     return HostConfig(**data)
@@ -112,23 +119,44 @@ def test_raw_command_sends_normalized_tokens_when_enabled():
     assert driver.presses == ["select", "right"]
 
 
-def test_play_in_dry_run_records_hand_and_target_sequence():
+def test_play_in_dry_run_records_deterministic_sequence():
+    # Dry-run is always deterministic: anchor at card 0 (up, down), step right to card 1,
+    # select (grab + auto-target leftmost), no target steps (target 0 == leftmost), select.
     cfg = _cfg(input_dry_run=True)
     provider = FakeStateProvider([_combat(hand=3, monsters=1)])
     handler = GamepadCommandHandler(cfg, provider)
     ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["1", "0"]))
     assert ok and error is None
-    assert handler.driver.presses == [
-        "down",
-        "left",
-        "left",
-        "left",
-        "left",
-        "left",
-        "right",
-        "select",
-        "select",
+    assert handler.driver.presses == ["up", "down", "right", "select", "select"]
+
+
+def test_deterministic_play_steps_to_card_and_target():
+    # card 2 of a 4-card hand, target enemy index 2 (3rd of 3 living): up,down,right,right ->
+    # card 2; select; then two rights to walk from the leftmost enemy to index 2; select.
+    cfg = _cfg(gamepad_deterministic_nav=True)
+    before = _combat(hand=4, monsters=3, energy=3)
+    after = _combat(hand=3, monsters=3, energy=2)
+    driver = FakeDriver()
+    handler = GamepadCommandHandler(cfg, FakeStateProvider([after]), driver=driver)
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["2", "2"]), state_hint=before)
+    assert ok and error is None
+    assert driver.presses == [
+        "up", "down", "right", "right",  # anchor + step to card 2
+        "select",                          # grab + auto-target leftmost enemy
+        "right", "right",                 # walk to enemy index 2
+        "select",                          # confirm
     ]
+
+
+def test_deterministic_nontarget_play_uses_two_selects():
+    cfg = _cfg(gamepad_deterministic_nav=True)
+    before = _combat(hand=2, monsters=1, energy=3)
+    after = _combat(hand=1, monsters=1, energy=2)
+    driver = FakeDriver()
+    handler = GamepadCommandHandler(cfg, FakeStateProvider([after]), driver=driver)
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["0"]), state_hint=before)
+    assert ok and error is None
+    assert driver.presses == ["up", "down", "select", "select"]
 
 
 def test_play_without_target_detects_target_mode_and_cancels():
@@ -179,6 +207,23 @@ def test_play_with_observed_target_succeeds_after_state_change():
     assert driver.presses[0] == "down"
     assert driver.presses[-1] == "select"
     assert "right" in driver.presses
+
+
+def test_play_releases_focus_after_play_when_enabled():
+    before = _combat(hand=2, monsters=1, energy=3)
+    after = _combat(hand=1, monsters=1, energy=2)
+    driver = FakeDriver()
+    observer = FakeObserver([FocusState(hand_index=0), FocusState(hand_index=0)])
+    handler = GamepadCommandHandler(
+        _cfg(gamepad_clear_focus_after_play=True),
+        FakeStateProvider([after]),
+        driver=driver,
+        observer=observer,
+    )
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["0"]), state_hint=before)
+    assert ok and error is None
+    # After a verified play, UP is pressed to release the still-lifted card.
+    assert driver.presses[-1] == "up"
 
 
 def test_play_uses_cached_state_hint_without_full_state_read():

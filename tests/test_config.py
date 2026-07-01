@@ -25,6 +25,14 @@ def test_ollama_env_overrides(monkeypatch):
     assert cfg.ollama_think is True
 
 
+def test_easyocr_env_override(monkeypatch):
+    monkeypatch.setenv("TSPIRE_USE_EASYOCR", "false")
+
+    cfg = HostConfig.load(path="missing-config.json")
+
+    assert cfg.use_easyocr is False
+
+
 def test_input_backend_env_override(monkeypatch):
     monkeypatch.setenv("TSPIRE_INPUT_BACKEND", "gamepad")
     cfg = HostConfig.load(path="missing-config.json")

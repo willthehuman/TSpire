@@ -42,6 +42,10 @@ class HostConfig:
 
     # Vision mode: "llm" (Ollama vision model, robust) or "cv" (OpenCV+Tesseract).
     vision_mode: str = "llm"
+    # In "cv" mode, use EasyOCR (deep-learning OCR) for the game's stylised text that Tesseract
+    # can't read -- card titles, the energy orb, the deck counter. Falls back to Tesseract when
+    # EasyOCR isn't installed. Card titles are then fuzzy-matched to real card names.
+    use_easyocr: bool = True
     # Ollama connection + model for vision_mode == "llm".
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "gemma4:31b-cloud"
@@ -77,6 +81,17 @@ class HostConfig:
     input_step_delay: float = 0.08
     input_settle_seconds: float = 0.25
     input_command_timeout: float = 30.0
+    # After a controller play, press UP to release the card the game keeps lifted/focused (it
+    # otherwise obscures the next screen read). Set false if it interferes with a setup.
+    gamepad_clear_focus_after_play: bool = True
+    # Deterministic controller navigation: instead of grabbing a frame and re-checking focus
+    # after every d-pad press (slow), anchor the cursor at card 0 (UP then DOWN sets the hand
+    # index to 0 in-game) and step right a known number of times. Far faster; relies on input
+    # landing reliably. Set false to use the slower closed-loop CV navigation.
+    gamepad_deterministic_nav: bool = True
+    # Delay between deterministic nav presses (on top of input_step_delay) so each d-pad press
+    # registers as a distinct frame. Raise if steps are dropped and the wrong card is played.
+    gamepad_nav_delay: float = 0.06
 
     # --- mouse backend tunables ---
     # A card play is a click-drag from the card to the target (monster) or, for
@@ -149,6 +164,8 @@ class HostConfig:
             self.tesseract_cmd = env["TSPIRE_TESSERACT_CMD"]
         if "TSPIRE_VISION_MODE" in env:
             self.vision_mode = env["TSPIRE_VISION_MODE"]
+        if "TSPIRE_USE_EASYOCR" in env:
+            self.use_easyocr = env["TSPIRE_USE_EASYOCR"].lower() in {"1", "true", "yes"}
         if "TSPIRE_OLLAMA_URL" in env:
             self.ollama_url = env["TSPIRE_OLLAMA_URL"]
         if "TSPIRE_OLLAMA_MODEL" in env:
@@ -175,6 +192,16 @@ class HostConfig:
             self.input_settle_seconds = float(env["TSPIRE_INPUT_SETTLE_SECONDS"])
         if "TSPIRE_INPUT_COMMAND_TIMEOUT" in env:
             self.input_command_timeout = float(env["TSPIRE_INPUT_COMMAND_TIMEOUT"])
+        if "TSPIRE_GAMEPAD_CLEAR_FOCUS_AFTER_PLAY" in env:
+            self.gamepad_clear_focus_after_play = (
+                env["TSPIRE_GAMEPAD_CLEAR_FOCUS_AFTER_PLAY"].lower() in {"1", "true", "yes"}
+            )
+        if "TSPIRE_GAMEPAD_DETERMINISTIC_NAV" in env:
+            self.gamepad_deterministic_nav = (
+                env["TSPIRE_GAMEPAD_DETERMINISTIC_NAV"].lower() in {"1", "true", "yes"}
+            )
+        if "TSPIRE_GAMEPAD_NAV_DELAY" in env:
+            self.gamepad_nav_delay = float(env["TSPIRE_GAMEPAD_NAV_DELAY"])
         if "TSPIRE_MOUSE_DRAG_SECONDS" in env:
             self.mouse_drag_seconds = float(env["TSPIRE_MOUSE_DRAG_SECONDS"])
         if "TSPIRE_MOUSE_VERIFY_TIMEOUT" in env:

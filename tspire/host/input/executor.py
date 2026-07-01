@@ -54,6 +54,16 @@ class GamepadCommandHandler:
         self._observe_hand_count: int | None = None
         self._observe_target_count: int | None = None
         self._foreground_failures = 0
+        # Fast image-based change detector (same one the mouse/keyboard backends use) so a
+        # play/end is confirmed by a cheap frame diff, not a slow LLM re-read. None when there
+        # is no capture (tests/fakes) -> the state-signature loop is used instead.
+        _capture = getattr(state_provider, "capture", None)
+        if _capture is not None:
+            from tspire.host.input.mouse import FrameChangeDetector
+
+            self.detector = FrameChangeDetector(_capture, config)
+        else:
+            self.detector = None
         if observer is not None:
             self.observer = observer
         elif isinstance(self.driver, DryRunDriver):
@@ -168,7 +178,7 @@ class GamepadCommandHandler:
         return True, None
 
     def _end_turn(self, before: GameState, *, verify_state_change: bool = True) -> tuple[bool, str | None]:
-        before_sig = _state_signature(before)
+        before_sig = self._change_baseline(before)
         self._press("end_turn")
         if not verify_state_change:
             return True, None
@@ -192,7 +202,12 @@ class GamepadCommandHandler:
         if target_index is not None and not _has_monster_index(combat.monsters, target_index):
             return False, f"target index {target_index} is out of range"
 
-        before_sig = _state_signature(before)
+        if self._deterministic_nav:
+            return self._play_deterministic(
+                card_index, target_index, combat, before, verify_state_change
+            )
+
+        before_sig = self._change_baseline(before)
         if not self._focus_hand_card(card_index, len(combat.hand)):
             return False, f"could not verify focus on hand card {card_index}"
         self._press("select")
@@ -206,7 +221,7 @@ class GamepadCommandHandler:
                 return True, None
             if not self._wait_for_change(before_sig):
                 return False, "play input sent, but no combat state change was observed"
-            return True, None
+            return self._played_ok()
 
         if self._target_focus_appeared(len(combat.monsters)):
             self._press("cancel")
@@ -215,6 +230,85 @@ class GamepadCommandHandler:
             return True, None
         if not self._wait_for_change(before_sig):
             return False, "play input sent, but no combat state change was observed"
+        return self._played_ok()
+
+    @property
+    def _deterministic_nav(self) -> bool:
+        # Dry-run can't observe focus, so it is always deterministic; otherwise honour config.
+        return self._verification_bypassed or bool(
+            getattr(self.config, "gamepad_deterministic_nav", True)
+        )
+
+    def _nav_delay(self) -> None:
+        self._sleep(max(0.0, float(getattr(self.config, "gamepad_nav_delay", 0.06))))
+
+    def _play_deterministic(
+        self,
+        card_index: int,
+        target_index: int | None,
+        combat,
+        before: GameState,
+        verify_state_change: bool,
+    ) -> tuple[bool, str | None]:
+        """Play a card with no closed-loop CV: anchor the hand cursor at card 0 and step.
+
+        StS controller navigation is deterministic (one card per d-pad press, wrap-safe), and
+        pressing DOWN out of inspect mode sets the hand index to 0 (decompiled
+        ``AbstractPlayer``). So UP (enter inspect) then DOWN lands on card 0, then RIGHT steps
+        to the target card. SELECT grabs it; a targeted card auto-targets the leftmost enemy,
+        then RIGHT walks to the requested target and SELECT confirms.
+        """
+        living = [m for m in combat.monsters if _monster_alive(m)]
+
+        self._press("up")
+        self._nav_delay()
+        self._press("down")  # -> hand card 0 (keyboardCardIndex = 0)
+        self._nav_delay()
+        for _ in range(card_index):
+            self._press("right")
+            self._nav_delay()
+        self._press("select")  # grab; a targeted card auto-targets the leftmost enemy
+        self._nav_delay()
+
+        if target_index is not None:
+            for _ in range(_target_ordinal(living, target_index)):
+                self._press("right")
+                self._nav_delay()
+
+        # Snapshot the change baseline HERE -- after all navigation, with the card grabbed and
+        # targeted but not yet played. The d-pad navigation moves/lifts cards and the reticle,
+        # so a baseline taken earlier would read the navigation itself as a "change" and report
+        # a false success. Let the grab/target settle first so only the final SELECT (the play)
+        # registers as the change.
+        self._sleep(self.timing.settle_seconds)
+        baseline = self._change_baseline(before)
+
+        if target_index is not None:
+            self._press("select")  # confirm on the selected target
+        else:
+            self._press("select")  # second confirm plays a non-targeted card
+
+        # NOTE: no clear-focus press here. After a play we are back in the hand with a card
+        # lifted, and the NEXT play's UP+DOWN anchor both un-lifts it and re-anchors on card 0.
+        # Pressing UP here would leave us in inspect mode, and the next anchor's UP would then
+        # jump to the relics/top panel instead of the hand -- breaking the deterministic count.
+        if not verify_state_change:
+            return True, None
+        if self._wait_for_change(baseline):
+            return True, None
+        return False, "play input sent, but no combat state change was observed"
+
+    def _played_ok(self) -> tuple[bool, str | None]:
+        """Return success, first releasing the card the game keeps lifted after a play.
+
+        In controller mode a card is always focused/lifted; leaving it up obscures the next
+        screen read. UP triggers the game's releaseCard(), returning the hand to a neutral fan.
+        """
+        if getattr(self.config, "gamepad_clear_focus_after_play", True):
+            try:
+                self._press("up")
+            except Exception:
+                log.debug("clear-focus press failed", exc_info=True)
         return True, None
 
     def _require_combat(self, state_hint: GameState | None = None) -> GameState:
@@ -408,13 +502,27 @@ class GamepadCommandHandler:
             self._sleep(min(step, 0.05))
         return False
 
-    def _wait_for_change(self, before_sig: str) -> bool:
+    def _change_baseline(self, before: GameState):
+        """Snapshot a 'before' signature for verification: a cheap image signature when a
+        detector is available, else the state signature (tests / no capture)."""
+        if self.detector is not None:
+            try:
+                return ("frame", self.detector.signature())
+            except Exception:
+                log.debug("frame baseline failed; using state signature", exc_info=True)
+        return ("state", _state_signature(before))
+
+    def _wait_for_change(self, baseline) -> bool:
         if self._verification_bypassed:
             return True
+        kind, sig = baseline
+        if kind == "frame" and self.detector is not None:
+            # Cheap frame diff -- no slow LLM re-reads on the input path.
+            return self.detector.wait_for_change(sig)
         deadline = time.monotonic() + self.timing.command_timeout
         while time.monotonic() <= deadline:
             self._sleep(self.timing.settle_seconds)
-            if _state_signature(self._read_state()) != before_sig:
+            if _state_signature(self._read_state()) != sig:
                 return True
         return False
 
@@ -478,6 +586,19 @@ def _int_arg(args: list[str], pos: int, name: str, *, optional: bool = False) ->
 
 def _has_monster_index(monsters: list[Monster], index: int) -> bool:
     return any(m.index == index and _monster_alive(m) for m in monsters)
+
+
+def _target_ordinal(living: list[Monster], target_index: int) -> int:
+    """Right-presses from the auto-targeted leftmost enemy to the requested target.
+
+    StS auto-targets the leftmost living enemy and RIGHT walks left-to-right; our monster list
+    is in board order, so the target's position among living monsters is the number of steps.
+    """
+    order = [m.index for m in living]
+    try:
+        return max(0, order.index(target_index))
+    except ValueError:
+        return 0
 
 
 def _monster_alive(monster: Monster) -> bool:

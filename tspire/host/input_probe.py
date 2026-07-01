@@ -360,13 +360,38 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="use the dry-run driver (offline wiring check; no real input, no focus detection)",
     )
+    parser.add_argument(
+        "--controller-check",
+        action="store_true",
+        dest="controller_check",
+        help="gamepad setup diagnostic: list OS controllers and flag Steam Input / wrong-order "
+        "/ missing virtual pad (no game or input required)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="enable debug logging")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
+    if args.controller_check:
+        return run_controller_check()
     if args.mouse:
         return run_mouse(args)
     return run(args)
+
+
+def run_controller_check() -> int:
+    """List the controllers the OS exposes and report gamepad-backend setup problems."""
+    from tspire.host.input.controller_check import analyze_controllers, enumerate_controllers
+
+    controllers = enumerate_controllers()
+    print(f"OS controllers ({len(controllers)}):")
+    for c in controllers:
+        print(f"  [{c['id']}] {c['name']}")
+    print("\nsetup diagnosis:")
+    problems = analyze_controllers(controllers)
+    for msg in problems:
+        print(f"  - {msg}")
+    ok = len(problems) == 1 and problems[0].startswith("Controller setup looks OK")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

@@ -40,6 +40,31 @@ class BBox:
         return self.top + self.height // 2
 
 
+def _dedup_overlapping_bars(bars: list["BBox"]) -> list["BBox"]:
+    """Drop false-positive HP bars that horizontally overlap a real one.
+
+    Each enemy has ONE HP bar in its own x-range; real bars don't overlap each other. Spurious
+    red strips (intent/status/ground) tend to overlap a real bar and sit off the common ground
+    line. So: process bars nearest the MEDIAN bar-Y first (the real ground line), and skip any
+    that significantly overlap an already-kept bar. Returns left-to-right.
+    """
+    if len(bars) <= 1:
+        return sorted(bars, key=lambda b: b.left)
+    med_y = sorted(b.top + b.height / 2 for b in bars)[len(bars) // 2]
+    kept: list[BBox] = []
+    for bar in sorted(bars, key=lambda b: abs((b.top + b.height / 2) - med_y)):
+        left, right = bar.left, bar.left + bar.width
+        overlaps = False
+        for k in kept:
+            overlap = min(right, k.left + k.width) - max(left, k.left)
+            if overlap > 0.4 * min(bar.width, k.width):
+                overlaps = True
+                break
+        if not overlaps:
+            kept.append(bar)
+    return sorted(kept, key=lambda b: b.left)
+
+
 @runtime_checkable
 class VisionBackend(Protocol):
     def ocr_text(self, frame: "np.ndarray", rect: Rect, *, digits: bool = False) -> str: ...
@@ -170,8 +195,7 @@ class CvVisionBackend:
             if cw / max(ch, 1) < 5.0:
                 continue
             bars.append(BBox(left=off_left + x, top=off_top + y, width=cw, height=ch))
-        bars.sort(key=lambda b: b.left)
-        return bars
+        return _dedup_overlapping_bars(bars)
 
     def find_cards(self, frame: "np.ndarray", search: Rect) -> list[BBox]:
         """Locate hand cards within `search`, returning boxes left-to-right.
