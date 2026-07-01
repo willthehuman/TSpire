@@ -5,15 +5,14 @@ hand cards 1-10 (``InputHelper.getCardSelectedByHotkey``), END_TURN is ``E``, CO
 ``Enter``, CANCEL is ``Esc``. This is coordinate-free for card *selection* -- no fragile CV
 or hand-layout math needed to pick the card.
 
-The one subtlety (also from the decompile): pressing the number key only *grabs* the card
-(``manuallySelectCard``); it then follows the cursor, and a non-target card only plays when
-CONFIRM fires while the cursor is in the drop zone (``isHoveringDropZone``). So we park the
-cursor at the play zone first, then tap the number, then CONFIRM. Targeted cards: CONFIRM
-auto-targets the first (leftmost) enemy, then LEFT/RIGHT walks to the requested target and a
-second CONFIRM plays it.
+The subtle part (also from the decompile): pressing the number key only *grabs* the card
+(``manuallySelectCard``), then CONFIRM advances the game through a frame-delayed keyboard
+mode. We avoid moving the mouse because that exits keyboard mode; the sequence is pure keys.
+Targeted cards auto-target the first (leftmost) enemy, then LEFT/RIGHT walks to the requested
+target and a final CONFIRM plays it.
 
-Win32-only (keystrokes + a single cursor move). Heavy bits are lazy-imported so the module
-imports for unit tests anywhere.
+Win32-only (keystrokes). Heavy bits are lazy-imported so the module imports for unit tests
+anywhere.
 """
 
 from __future__ import annotations

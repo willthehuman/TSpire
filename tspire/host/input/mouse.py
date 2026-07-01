@@ -538,12 +538,14 @@ class MouseCommandHandler:
         locator: CardTargetLocator | None = None,
         detector: FrameChangeDetector | None = None,
         key_driver=None,
+        keyboard_fallback=None,
     ) -> None:
         self.config = config
         self.state_provider = state_provider
         self.driver = driver or build_mouse_driver(config)
         self.locator = locator or CardTargetLocator(state_provider, config)
         self._key_driver = key_driver  # built lazily for proceed/return
+        self._keyboard_fallback = keyboard_fallback  # built lazily only after mouse targeting misses
         capture = getattr(state_provider, "capture", None)
         self.detector = detector or (FrameChangeDetector(capture, config) if capture else None)
         self._foreground_failures = 0
@@ -664,12 +666,21 @@ class MouseCommandHandler:
             if self._wait_for_change(before_sig):
                 return True, None
             self._key("cancel")
-            return False, (
-                "targeted play did not resolve (the drop likely missed the enemy). For "
-                "multi-enemy targeting, try the keyboard backend "
-                "(TSPIRE_INPUT_BACKEND=keyboard), which picks targets with arrow keys and "
-                "needs no enemy coordinates."
-            )
+            if len(living) > 1 and self._keyboard_fallback_enabled():
+                ok, error = self._play_with_keyboard_fallback(
+                    list(args),
+                    before,
+                    verify_state_change=verify_state_change,
+                )
+                if ok:
+                    return True, None
+                return False, (
+                    "targeted mouse play did not resolve, and the keyboard fallback also "
+                    f"failed: {error or 'no combat state change was observed'}. Confirm "
+                    "Settings -> Show Card keys is enabled, or set "
+                    "TSPIRE_MOUSE_KEYBOARD_FALLBACK=0 to disable the fallback."
+                )
+            return False, self._target_miss_error()
 
         self.driver.drag(card_point, play_zone)
         if not verify_state_change:
@@ -752,6 +763,39 @@ class MouseCommandHandler:
 
             self._key_driver = KeyboardDriver(InputTiming.from_config(self.config))
         self._key_driver.press(token)
+
+    def _keyboard_fallback_enabled(self) -> bool:
+        return bool(getattr(self.config, "mouse_keyboard_fallback", True))
+
+    def _play_with_keyboard_fallback(
+        self,
+        args: list[str],
+        before: GameState,
+        *,
+        verify_state_change: bool,
+    ) -> tuple[bool, str | None]:
+        if self._keyboard_fallback is None:
+            from tspire.host.input.keyboard import KeyboardCommandHandler
+
+            self._keyboard_fallback = KeyboardCommandHandler(
+                self.config,
+                self.state_provider,
+            )
+        return self._keyboard_fallback.execute(
+            protocol.Command(protocol.Verb.PLAY, args),
+            before,
+            verify_state_change=verify_state_change,
+            note_action=False,
+        )
+
+    @staticmethod
+    def _target_miss_error() -> str:
+        return (
+            "targeted play did not resolve (the drop likely missed the enemy). For "
+            "multi-enemy targeting, try the keyboard backend "
+            "(TSPIRE_INPUT_BACKEND=keyboard), which picks targets with arrow keys and "
+            "needs no enemy coordinates."
+        )
 
     def _note_action(self, command: protocol.Command, before: GameState | None) -> None:
         note = getattr(self.state_provider, "note_action", None)

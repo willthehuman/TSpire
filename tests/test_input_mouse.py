@@ -107,15 +107,43 @@ class FakeKeyDriver:
         self.presses.append(token)
 
 
-def _handler(state, *, driver=None, locator=None, detector=None, provider=None, key=None):
+class FakeKeyboardFallback:
+    def __init__(self, result=(True, None)):
+        self.result = result
+        self.calls = []
+
+    def execute(self, command, state_hint=None, *, verify_state_change=True, note_action=True):
+        self.calls.append(
+            {
+                "command": command,
+                "state_hint": state_hint,
+                "verify_state_change": verify_state_change,
+                "note_action": note_action,
+            }
+        )
+        return self.result
+
+
+def _handler(
+    state,
+    *,
+    config=None,
+    driver=None,
+    locator=None,
+    detector=None,
+    provider=None,
+    key=None,
+    keyboard_fallback=None,
+):
     provider = provider or FakeStateProvider([state])
     return MouseCommandHandler(
-        _cfg(),
+        config or _cfg(),
         provider,
         driver=driver or FakeMouseDriver(),
         locator=locator,
         detector=detector or FakeDetector(changed=True),
         key_driver=key or FakeKeyDriver(),
+        keyboard_fallback=keyboard_fallback,
     )
 
 
@@ -157,6 +185,84 @@ def test_multi_enemy_target_miss_cancels_then_retries_play_zone():
     assert ok and error is None
     assert driver.drags == [((300, 900), (700, 400)), ((300, 900), (960, 430))]
     assert key.presses == ["cancel"]  # un-stuck targeting before the retry
+
+
+def test_multi_enemy_target_miss_falls_back_to_keyboard():
+    state = _combat(hand=3, monsters=2)
+    driver = FakeMouseDriver()
+    key = FakeKeyDriver()
+    fallback = FakeKeyboardFallback()
+    locator = FakeLocator(
+        cards=[(100, 900), (200, 900), (300, 900)],
+        monsters={0: (700, 400), 1: (900, 400)},
+        play=(960, 430),
+    )
+    handler = _handler(
+        state,
+        driver=driver,
+        locator=locator,
+        detector=FakeDetector([False, False]),
+        key=key,
+        keyboard_fallback=fallback,
+    )
+
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["2", "1"]), state_hint=state)
+
+    assert ok and error is None
+    assert driver.drags == [((300, 900), (900, 400)), ((300, 900), (960, 430))]
+    assert key.presses == ["cancel", "cancel"]
+    assert len(fallback.calls) == 1
+    call = fallback.calls[0]
+    assert call["command"].verb == protocol.Verb.PLAY
+    assert call["command"].args == ["2", "1"]
+    assert call["state_hint"] is state
+    assert call["verify_state_change"] is True
+    assert call["note_action"] is False
+
+
+def test_multi_enemy_target_miss_reports_keyboard_fallback_failure():
+    state = _combat(hand=2, monsters=2)
+    fallback = FakeKeyboardFallback((False, "keyboard input unavailable"))
+    locator = FakeLocator(
+        cards=[(100, 900), (200, 900)],
+        monsters={0: (700, 400), 1: (900, 400)},
+        play=(960, 430),
+    )
+    handler = _handler(
+        state,
+        locator=locator,
+        detector=FakeDetector([False, False]),
+        keyboard_fallback=fallback,
+    )
+
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["1", "1"]), state_hint=state)
+
+    assert not ok
+    assert "keyboard fallback also failed" in error
+    assert "keyboard input unavailable" in error
+
+
+def test_multi_enemy_target_miss_can_disable_keyboard_fallback():
+    state = _combat(hand=2, monsters=2)
+    fallback = FakeKeyboardFallback()
+    locator = FakeLocator(
+        cards=[(100, 900), (200, 900)],
+        monsters={0: (700, 400), 1: (900, 400)},
+        play=(960, 430),
+    )
+    handler = _handler(
+        state,
+        config=_cfg(mouse_keyboard_fallback=False),
+        locator=locator,
+        detector=FakeDetector([False, False]),
+        keyboard_fallback=fallback,
+    )
+
+    ok, error = handler.execute(protocol.Command(protocol.Verb.PLAY, ["1", "1"]), state_hint=state)
+
+    assert not ok
+    assert "targeted play did not resolve" in error
+    assert fallback.calls == []
 
 
 def test_single_enemy_targeted_play_uses_play_zone_auto_target():

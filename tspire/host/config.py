@@ -125,6 +125,11 @@ class HostConfig:
     mouse_change_region_top: float = 0.55
     # Restore the user's cursor position after each click/drag.
     mouse_restore_cursor: bool = True
+    # If a targeted multi-enemy mouse drag does not produce a frame change, retry the same
+    # play with StS's number-key keyboard path before reporting failure. This keeps mouse as
+    # the primary/no-setup backend while giving fragile enemy coordinates a coordinate-free
+    # escape hatch.
+    mouse_keyboard_fallback: bool = True
 
     # --- keyboard backend (StS number-key hotkeys) tunables ---
     key_tap_seconds: float = 0.04  # key hold duration
@@ -224,6 +229,10 @@ class HostConfig:
             self.mouse_hand_row_y = float(env["TSPIRE_MOUSE_HAND_ROW_Y"])
         if "TSPIRE_MOUSE_RESTORE_CURSOR" in env:
             self.mouse_restore_cursor = env["TSPIRE_MOUSE_RESTORE_CURSOR"].lower() in {"1", "true", "yes"}
+        if "TSPIRE_MOUSE_KEYBOARD_FALLBACK" in env:
+            self.mouse_keyboard_fallback = (
+                env["TSPIRE_MOUSE_KEYBOARD_FALLBACK"].lower() in {"1", "true", "yes"}
+            )
         if "TSPIRE_OLLAMA_THINK" in env:
             self.ollama_think = env["TSPIRE_OLLAMA_THINK"].lower() in {"1", "true", "yes"}
 

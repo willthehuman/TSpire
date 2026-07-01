@@ -21,7 +21,8 @@ Screen reading has two modes (config `vision_mode`):
   default on). Fast, but fragile on the cluttered scene and needs calibration + a Tesseract
   install.
 
-There are three input backends (`input_backend`, or `TSPIRE_INPUT_BACKEND`):
+Input is a no-mod, mouse-first hybrid. There are three backends (`input_backend`, or
+`TSPIRE_INPUT_BACKEND`):
 
 - **`mouse`** (default) — plays a card by click-**dragging** it to the target enemy (or, for a
   non-targeted card, to the play zone) and ends the turn by clicking the end-turn button. A
@@ -29,14 +30,16 @@ There are three input backends (`input_backend`, or `TSPIRE_INPUT_BACKEND`):
   Spire's own deterministic hand-layout math** (read out of the game files), so they're exact
   and resolution-independent — no fragile CV card detection. Monster targets use HP-bar
   detection. Input success is confirmed with a cheap frame-change check, not a slow re-read.
-- **`keyboard`** (experimental) — plays a card with StS's **number-key hotkeys** (1-9,0 select
-  hand cards 1-10; requires *Settings → "Show Card keys" on*). `E` ends the turn. Coordinate-
-  free in principle, but StS's keyboard input is a stateful multi-mode system (a persistent
-  `keyboardCardIndex`, mouse/keyboard-mode toggling, frame-delayed targeting), so driving it
-  reliably open-loop is unreliable — multi-enemy targeting in particular can grab the wrong
-  card or mis-target. Prefer `mouse`; revisiting this would need closed-loop screen feedback.
+  If a verified multi-enemy mouse target drop misses, the mouse backend can retry the same
+  play through the keyboard hotkey path automatically.
+- **`keyboard`** (fallback/helper) — plays a card with StS's **number-key hotkeys** (1-9,0
+  select hand cards 1-10; requires *Settings → "Show Card keys" on*). `E` ends the turn.
+  It is coordinate-free for card and target selection, but StS's keyboard input is a stateful
+  multi-mode system (`keyboardCardIndex`, mouse/keyboard-mode toggling, frame-delayed
+  targeting), so it is best as a fallback for fragile mouse target coordinates rather than
+  the primary path.
 - **`gamepad`** — the original virtual Xbox360 pad with arrow-key focus navigation (see the
-  controller-detection notes below). Kept for completeness.
+  controller-detection notes below). Kept as a last-resort/debug backend.
 
 ## Status
 
@@ -48,8 +51,8 @@ Milestone-based build (see `~/.claude/plans/this-is-an-empty-binary-spark.md`):
   `gemma4:31b-cloud`: both enemies, full hand (names+costs), HP/energy/block all correct.*
 - **M2 Client render** — Textual combat dashboard (top bar, enemies+intents, player, hand),
   friendly command parser, keybindings, reconnecting WebSocket client. ✓
-- **M3** — input executors: mouse-drag backend (default), plus keyboard / gamepad fallbacks
-  with closed-loop combat focus navigation. ✓
+- **M3** — input executors: mouse-first hybrid backend (default), plus keyboard / gamepad
+  fallbacks with closed-loop combat focus navigation. ✓
 - **M4** — command validation, push-on-change, recovery.
 
 ## Game art (relics / intents)
@@ -84,7 +87,7 @@ python -m tspire.host.calibrate --image shot.png  # or a saved screenshot
 | Path | Role |
 |------|------|
 | `tspire/common/` | Shared state schema + wire protocol (no host-only deps) |
-| `tspire/host/` | Screen capture, vision parsing, keyboard/gamepad input, WebSocket server |
+| `tspire/host/` | Screen capture, vision parsing, mouse/keyboard/gamepad input, WebSocket server |
 | `tspire/client/` | Terminal UI and command parsing |
 | `tools/` | One-off tooling (e.g. extracting card/relic art from the game jar) |
 | `tests/` | Parser/schema tests + screenshot fixtures |
@@ -137,7 +140,9 @@ python -m tspire.host.input_probe --mouse --play-card 0 --target 0   # ...onto m
 The overlay writes `mouse_points.png` with a marker on every card / monster / the play zone /
 the end-turn button so you can confirm they land; tune `tspire/host/vision/regions.py`
 (`hand_search`, `monster_search`, `end_turn`) and the `mouse_play_zone_*` config if a marker
-is off. To use the virtual Xbox360 controller fallback instead, set
+is off. For multi-enemy target misses, the default mouse backend automatically falls back to
+the keyboard hotkey path when `Show Card keys` is enabled; disable that retry with
+`TSPIRE_MOUSE_KEYBOARD_FALLBACK=0`. To use the virtual Xbox360 controller fallback instead, set
 `TSPIRE_INPUT_BACKEND=gamepad`; then Slay the Spire's controller support must be enabled
 in-game, and the detection notes below apply.
 
@@ -200,7 +205,7 @@ Useful env overrides: `TSPIRE_VISION_MODE`, `TSPIRE_OLLAMA_URL`,
 `TSPIRE_INPUT_COMMAND_TIMEOUT`, and the mouse-backend tunables
 `TSPIRE_MOUSE_DRAG_SECONDS`, `TSPIRE_MOUSE_VERIFY_TIMEOUT`,
 `TSPIRE_MOUSE_CHANGE_THRESHOLD`, `TSPIRE_MOUSE_PLAY_ZONE_X` / `_Y`,
-`TSPIRE_MOUSE_RESTORE_CURSOR`.
+`TSPIRE_MOUSE_KEYBOARD_FALLBACK`, `TSPIRE_MOUSE_RESTORE_CURSOR`.
 
 ## Develop
 

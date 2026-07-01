@@ -39,6 +39,12 @@ def test_input_backend_env_override(monkeypatch):
     assert cfg.input_backend == "gamepad"
 
 
+def test_mouse_keyboard_fallback_env_override(monkeypatch):
+    monkeypatch.setenv("TSPIRE_MOUSE_KEYBOARD_FALLBACK", "false")
+    cfg = HostConfig.load(path="missing-config.json")
+    assert cfg.mouse_keyboard_fallback is False
+
+
 def test_focus_before_capture_env_override(monkeypatch):
     monkeypatch.setenv("TSPIRE_FOCUS_BEFORE_CAPTURE", "false")
     cfg = HostConfig.load(path="missing-config.json")
